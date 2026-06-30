@@ -68,7 +68,10 @@ function buildUpstreamUrl(
   path: string,
   search: string,
 ): string {
-  const url = new URL(path, baseUrl);
+  const url = new URL(baseUrl);
+  const basePath = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
+  const requestPath = path.startsWith("/") ? path : `/${path}`;
+  url.pathname = `${basePath}${requestPath}`;
   url.search = search;
   return url.toString();
 }

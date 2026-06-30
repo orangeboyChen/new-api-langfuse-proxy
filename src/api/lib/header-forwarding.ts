@@ -18,10 +18,9 @@ const ENTITY_HEADERS = new Set([
 
 const PROXY_ONLY_HEADERS = new Set(["cookie", "x-session-id", "x-user-id"]);
 
-function shouldStripUpstreamHeader(lowerName: string): boolean {
+function shouldStripRequestHeader(lowerName: string): boolean {
   return (
     HOP_BY_HOP_HEADERS.has(lowerName) ||
-    ENTITY_HEADERS.has(lowerName) ||
     lowerName.startsWith("x-langfuse-") ||
     PROXY_ONLY_HEADERS.has(lowerName)
   );
@@ -38,7 +37,7 @@ export function buildUpstreamHeaders(
   const headers: Record<string, string> = {};
   original.forEach((value, name) => {
     const lower = name.toLowerCase();
-    if (!shouldStripUpstreamHeader(lower)) {
+    if (!shouldStripRequestHeader(lower)) {
       headers[name] = value;
     }
   });

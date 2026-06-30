@@ -33,8 +33,8 @@ This is a Bun + Elysia proxy service that forwards OpenAI-compatible API request
 - `stream_options.include_usage` injected into streaming request bodies so Langfuse gets token counts
 - `usageDetails` sends full OpenAI token breakdown (cached, audio, reasoning tokens) to Langfuse
 - `completionStartTime` sent to Langfuse for TTFB tracking separate from total duration
-- Optional `PROXY_API_KEY` gate with `crypto.timingSafeEqual` comparison
-- `UPSTREAM_API_KEY` overrides consumer's Authorization header if set
+- No proxy auth gate; consumer authentication is delegated to the upstream provider
+- Authorization and provider key headers are proxied through unchanged
 - Request ID: preserves consumer's `X-Request-ID` or generates UUID, used as Langfuse trace ID
 - Client disconnect aborts upstream fetch via AbortController to prevent orphaned streams
 - Non-JSON requests (multipart/binary) forwarded as raw streams, telemetry captures metadata only

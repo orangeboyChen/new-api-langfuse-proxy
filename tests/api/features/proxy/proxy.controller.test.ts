@@ -460,6 +460,45 @@ describe("passthroughController", () => {
       captureServer.stop();
     }
   });
+
+  test("preserves request content-encoding on passthrough uploads", async () => {
+    const payload = gzipSync(new TextEncoder().encode("compressed payload"));
+    let capturedEncoding = "";
+    let capturedBody = new Uint8Array();
+    const captureServer = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        capturedEncoding = req.headers.get("content-encoding") || "";
+        capturedBody = new Uint8Array(await req.arrayBuffer());
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createPassthroughApp();
+      const res = await app.handle(
+        new Request("http://localhost/custom/upload", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Encoding": "gzip",
+          },
+          body: payload,
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(capturedEncoding).toBe("gzip");
+      expect(Array.from(capturedBody)).toEqual(Array.from(payload));
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
+  });
 });
 
 describe("deepseekController", () => {
@@ -590,7 +629,7 @@ describe("deepseekController", () => {
       fetch(req) {
         const path = new URL(req.url).pathname;
         seenPaths.push(path);
-        const model = path.startsWith("/deepseek/v1")
+        const model = path.includes("/deepseek/v1")
           ? "deepseek-chat"
           : "gpt-4o-mini";
         return new Response(JSON.stringify({ model, choices: [] }), {
@@ -599,7 +638,7 @@ describe("deepseekController", () => {
       },
     });
     const original = config.upstreamBaseUrl;
-    config.upstreamBaseUrl = `http://localhost:${deepseekServer.port}`;
+    config.upstreamBaseUrl = `http://localhost:${deepseekServer.port}/api`;
     try {
       // Same mount order as app.ts: deepseek before the /v1/* catch-all
       const app = new Elysia().use(deepseekController).use(proxyController);
@@ -625,8 +664,8 @@ describe("deepseekController", () => {
       );
       const dsData = (await dsRes.json()) as Record<string, unknown>;
       expect(dsData.model).toBe("deepseek-chat");
-      expect(seenPaths).toContain("/v1/chat/completions");
-      expect(seenPaths).toContain("/deepseek/v1/chat/completions");
+      expect(seenPaths).toContain("/api/v1/chat/completions");
+      expect(seenPaths).toContain("/api/deepseek/v1/chat/completions");
     } finally {
       config.upstreamBaseUrl = original;
       deepseekServer.stop();
