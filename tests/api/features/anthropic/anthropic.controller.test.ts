@@ -20,6 +20,7 @@ beforeAll(() => {
 
         // Echo back headers for verification
         const apiKey = req.headers.get("x-api-key") || "";
+        const authorization = req.headers.get("authorization") || "";
         const version = req.headers.get("anthropic-version") || "";
         const beta = req.headers.get("anthropic-beta") || "";
 
@@ -62,7 +63,7 @@ beforeAll(() => {
             model: "claude-sonnet-4-20250514",
             stop_reason: "end_turn",
             usage: { input_tokens: 10, output_tokens: 3 },
-            _echo: { apiKey, version, beta },
+            _echo: { apiKey, authorization, version, beta },
           }),
           {
             headers: {
@@ -85,7 +86,6 @@ beforeAll(() => {
   });
   mockBaseUrl = `http://localhost:${mockServer.port}`;
   config.upstreamBaseUrl = mockBaseUrl;
-  config.proxyApiKey = "";
 });
 
 afterAll(() => {
@@ -170,7 +170,7 @@ describe("anthropicController", () => {
     expect(data._echo?.apiKey).toBe("sk-ant-client-key");
   });
 
-  test("extracts API key from Authorization Bearer header", async () => {
+  test("keeps Authorization Bearer header on passthrough", async () => {
     const app = createApp();
     const res = await app.handle(
       new Request("http://localhost/v1/messages", {
@@ -188,8 +188,11 @@ describe("anthropicController", () => {
       }),
     );
 
-    const data = (await res.json()) as Record<string, { apiKey: string }>;
-    expect(data._echo?.apiKey).toBe("sk-ant-from-bearer");
+    const data = (await res.json()) as Record<
+      string,
+      { authorization: string }
+    >;
+    expect(data._echo?.authorization).toBe("Bearer sk-ant-from-bearer");
   });
 
   test("forwards x-user-id without error", async () => {
@@ -323,86 +326,6 @@ describe("anthropicController", () => {
     expect(res.status).toBe(200);
   });
 
-  test("enforces proxy API key when configured", async () => {
-    config.proxyApiKey = "test-key";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request("http://localhost/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": "wrong-key",
-            "anthropic-version": "2023-06-01",
-          },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 100,
-            messages: [{ role: "user", content: "hi" }],
-          }),
-        }),
-      );
-
-      expect(res.status).toBe(401);
-      const data = (await res.json()) as { error: { code: string } };
-      expect(data.error.code).toBe("invalid_api_key");
-    } finally {
-      config.proxyApiKey = "";
-    }
-  });
-
-  test("allows request with correct proxy API key via x-api-key", async () => {
-    config.proxyApiKey = "test-key";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request("http://localhost/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": "test-key",
-            "anthropic-version": "2023-06-01",
-          },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 100,
-            messages: [{ role: "user", content: "hi" }],
-          }),
-        }),
-      );
-
-      expect(res.status).toBe(200);
-    } finally {
-      config.proxyApiKey = "";
-    }
-  });
-
-  test("allows request with correct proxy API key via Authorization Bearer", async () => {
-    config.proxyApiKey = "test-key";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request("http://localhost/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: "Bearer test-key",
-            "anthropic-version": "2023-06-01",
-          },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 100,
-            messages: [{ role: "user", content: "hi" }],
-          }),
-        }),
-      );
-
-      expect(res.status).toBe(200);
-    } finally {
-      config.proxyApiKey = "";
-    }
-  });
-
   test("returns 502 for unreachable upstream", async () => {
     const originalUrl = config.upstreamBaseUrl;
     const originalLevel = logger.level;
@@ -463,7 +386,7 @@ describe("anthropicController", () => {
     expect(body).toContain("Hi!");
   });
 
-  test("forwards anthropic- prefixed response headers", async () => {
+  test("forwards response headers without filtering provider-specific values", async () => {
     const app = createApp();
     const res = await app.handle(
       new Request("http://localhost/v1/messages", {
@@ -482,5 +405,6 @@ describe("anthropicController", () => {
     );
 
     expect(res.headers.get("anthropic-ratelimit-remaining")).toBe("99");
+    expect(res.headers.get("request-id")).toBe("req_test");
   });
 });

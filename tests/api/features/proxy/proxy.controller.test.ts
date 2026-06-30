@@ -49,7 +49,6 @@ beforeAll(() => {
   });
   mockBaseUrl = `http://localhost:${mockServer.port}`;
   config.upstreamBaseUrl = mockBaseUrl;
-  config.proxyApiKey = "";
 });
 
 afterAll(() => {
@@ -100,42 +99,6 @@ describe("proxyController", () => {
     );
 
     expect(res.headers.get("x-request-id")).toBe("my-trace-id");
-  });
-
-  test("enforces proxy API key when configured", async () => {
-    config.proxyApiKey = "test-key";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request("http://localhost/v1/models", {
-          method: "GET",
-          headers: { Authorization: "Bearer wrong-key" },
-        }),
-      );
-
-      expect(res.status).toBe(401);
-      const data = (await res.json()) as { error: { code: string } };
-      expect(data.error.code).toBe("invalid_api_key");
-    } finally {
-      config.proxyApiKey = "";
-    }
-  });
-
-  test("allows request with correct proxy API key", async () => {
-    config.proxyApiKey = "test-key";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request("http://localhost/v1/models", {
-          method: "GET",
-          headers: { Authorization: "Bearer test-key" },
-        }),
-      );
-
-      expect(res.status).toBe(200);
-    } finally {
-      config.proxyApiKey = "";
-    }
   });
 
   test("forwards consumer Authorization to upstream", async () => {
@@ -303,12 +266,16 @@ describe("passthroughController", () => {
   test("continues passthrough for unmatched paths", async () => {
     let capturedPath = "";
     let capturedAuth = "";
+    let capturedApiKey = "";
+    let capturedGoogKey = "";
     const captureServer = Bun.serve({
       port: 0,
       fetch(req) {
         const url = new URL(req.url);
         capturedPath = `${url.pathname}${url.search}`;
         capturedAuth = req.headers.get("authorization") || "";
+        capturedApiKey = req.headers.get("x-api-key") || "";
+        capturedGoogKey = req.headers.get("x-goog-api-key") || "";
         return new Response(
           JSON.stringify({
             path: capturedPath,
@@ -327,6 +294,8 @@ describe("passthroughController", () => {
           method: "POST",
           headers: {
             Authorization: "Bearer passthrough-key",
+            "x-api-key": "plain-key",
+            "x-goog-api-key": "goog-key",
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ hello: "world" }),
@@ -336,6 +305,8 @@ describe("passthroughController", () => {
       expect(res.status).toBe(200);
       expect(capturedPath).toBe("/custom/route?foo=bar");
       expect(capturedAuth).toBe("Bearer passthrough-key");
+      expect(capturedApiKey).toBe("plain-key");
+      expect(capturedGoogKey).toBe("goog-key");
     } finally {
       config.upstreamBaseUrl = originalUrl;
       captureServer.stop();

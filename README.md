@@ -26,13 +26,12 @@ Consumer  -->  Proxy  --------+--> Upstream Anthropic (/v1/messages)
 **Key features:**
 
 - **Multi-provider** — native support for OpenAI, Anthropic, Gemini, and DeepSeek APIs with provider-specific stream parsing and telemetry
-- **Passthrough auth** — consumers send their own API key, proxy forwards it upstream. No user management.
+- **Key passthrough** — consumers send their own API key, proxy forwards it upstream. No user management.
 - **OpenAI catch-all** — `ALL /v1/*` forwards any OpenAI-compatible request. Chat completions, embeddings, audio, images, assistants — all work automatically.
 - **DeepSeek routing** — `ALL /deepseek/v1/*` forwards to the same upstream, reusing the OpenAI-compatible parsing and telemetry.
 - **Fallback passthrough** — unmatched paths are forwarded to the upstream base URL instead of returning a local 404.
 - **Streaming support** — SSE streams are split and returned immediately without mutating the request body.
 - **Full telemetry** — every request is logged to Langfuse with input messages, output content, model, full token usage breakdown, TTFB, and total duration.
-- **Optional auth gate** — set `PROXY_API_KEY` to require consumers to authenticate with the proxy itself (timing-safe comparison).
 - **Graceful shutdown** — SIGTERM/SIGINT stops accepting connections, waits for in-flight requests, and flushes Langfuse before exiting.
 
 ## Getting Started

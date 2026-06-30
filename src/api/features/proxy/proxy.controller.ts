@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import Elysia from "elysia";
-import { jsonError, timingSafeEqual } from "@/api/lib/http";
+import { jsonError } from "@/api/lib/http";
 import {
   parseLangfuseMetadata,
   parseLangfuseTags,
@@ -156,26 +156,12 @@ async function handleProxyRequest({
     request.headers.get("x-langfuse-metadata"),
   );
 
-  // 1. Auth gate
-  if (config.proxyApiKey) {
-    const authHeader = request.headers.get("authorization") || "";
-    const expected = `Bearer ${config.proxyApiKey}`;
-    if (!timingSafeEqual(authHeader, expected)) {
-      return jsonError(
-        "Invalid proxy API key",
-        "auth_error",
-        "invalid_api_key",
-        401,
-      );
-    }
-  }
-
   const contentType = request.headers.get("content-type") || "";
   const { bodyForUpstream, bodyTextForTelemetry } =
     await readRequestBodyForTelemetry(request, contentType);
   const upstreamHeaders = buildUpstreamHeaders(request.headers, traceId);
 
-  // 2. Fetch upstream with timeout and client disconnect propagation
+  // 1. Fetch upstream with timeout and client disconnect propagation
   const abortController = new AbortController();
   const timeoutId = setTimeout(
     () => abortController.abort(new DOMException("Timeout", "TimeoutError")),
@@ -211,7 +197,7 @@ async function handleProxyRequest({
     return jsonError(message, "server_error", code, 502);
   }
 
-  // 3. Build response
+  // 2. Build response
   const isStreaming =
     upstreamRes.headers.get("content-type")?.includes("text/event-stream") ??
     false;
@@ -225,10 +211,10 @@ async function handleProxyRequest({
     });
   }
 
-  // 4. Tee stream for telemetry
+  // 3. Tee stream for telemetry
   const [clientStream, telemetryStream] = upstreamRes.body.tee();
 
-  // 5. Background telemetry (non-blocking)
+  // 4. Background telemetry (non-blocking)
   const ctx: ProxyRequestContext = {
     traceId,
     sessionId,
@@ -251,7 +237,7 @@ async function handleProxyRequest({
     logger.error({ err }, "Langfuse telemetry failed"),
   );
 
-  // 6. Return response immediately
+  // 5. Return response immediately
   return new Response(clientStream, {
     status: upstreamRes.status,
     headers: responseHeaders,
