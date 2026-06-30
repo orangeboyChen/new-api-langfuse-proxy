@@ -28,23 +28,18 @@ function buildUpstreamHeaders(
     if (value) headers[name] = value;
   }
 
-  // anthropic-version: prefer request header, fall back to config
-  headers["anthropic-version"] =
-    original.get("anthropic-version") || config.anthropicVersion;
+  const version = original.get("anthropic-version");
+  if (version) {
+    headers["anthropic-version"] = version;
+  }
 
-  // x-api-key: use config override if set, else forward request's x-api-key,
-  // or extract token from Authorization: Bearer ...
-  if (config.anthropicApiKey) {
-    headers["x-api-key"] = config.anthropicApiKey;
+  const apiKey = original.get("x-api-key");
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
   } else {
-    const apiKey = original.get("x-api-key");
-    if (apiKey) {
-      headers["x-api-key"] = apiKey;
-    } else {
-      const auth = original.get("authorization");
-      if (auth?.startsWith("Bearer ")) {
-        headers["x-api-key"] = auth.slice(7);
-      }
+    const auth = original.get("authorization");
+    if (auth?.startsWith("Bearer ")) {
+      headers["x-api-key"] = auth.slice(7);
     }
   }
 
@@ -129,7 +124,7 @@ export const anthropicController = new Elysia({ prefix: "/v1" }).all(
 
     // 3. Build upstream URL
     const url = new URL(request.url);
-    const upstreamUrl = `${config.anthropicBaseUrl}/v1/messages${url.search}`;
+    const upstreamUrl = `${config.upstreamBaseUrl}/v1/messages${url.search}`;
 
     // 4. Build upstream headers
     const upstreamHeaders = buildUpstreamHeaders(request.headers, traceId);

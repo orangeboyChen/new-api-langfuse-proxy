@@ -82,9 +82,8 @@ beforeAll(() => {
     },
   });
   mockBaseUrl = `http://localhost:${mockServer.port}`;
-  config.geminiBaseUrl = mockBaseUrl;
+  config.upstreamBaseUrl = mockBaseUrl;
   config.proxyApiKey = "";
-  config.geminiApiKey = "";
 });
 
 afterAll(() => {
@@ -145,31 +144,26 @@ describe("geminiController", () => {
     expect(data._echo?.googClient).toBe("genai-js/1.0");
   });
 
-  test("uses config geminiApiKey override", async () => {
-    config.geminiApiKey = "server-gemini-key";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request(
-          "http://localhost/v1beta/models/gemini-2.0-flash:generateContent",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-goog-api-key": "client-key",
-            },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: "test" }] }],
-            }),
+  test("keeps consumer x-goog-api-key on passthrough", async () => {
+    const app = createApp();
+    const res = await app.handle(
+      new Request(
+        "http://localhost/v1beta/models/gemini-2.0-flash:generateContent",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": "client-key",
           },
-        ),
-      );
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: "test" }] }],
+          }),
+        },
+      ),
+    );
 
-      const data = (await res.json()) as Record<string, { apiKey: string }>;
-      expect(data._echo?.apiKey).toBe("server-gemini-key");
-    } finally {
-      config.geminiApiKey = "";
-    }
+    const data = (await res.json()) as Record<string, { apiKey: string }>;
+    expect(data._echo?.apiKey).toBe("client-key");
   });
 
   test("extracts key from Authorization Bearer → x-goog-api-key", async () => {
@@ -454,9 +448,9 @@ describe("geminiController", () => {
   });
 
   test("returns 502 for unreachable upstream", async () => {
-    const originalUrl = config.geminiBaseUrl;
+    const originalUrl = config.upstreamBaseUrl;
     const originalLevel = logger.level;
-    config.geminiBaseUrl = "http://localhost:1";
+    config.upstreamBaseUrl = "http://localhost:1";
     logger.level = "silent";
     try {
       const app = createApp();
@@ -480,7 +474,7 @@ describe("geminiController", () => {
       const data = (await res.json()) as { error: { code: string } };
       expect(data.error.code).toBe("connection_error");
     } finally {
-      config.geminiBaseUrl = originalUrl;
+      config.upstreamBaseUrl = originalUrl;
       logger.level = originalLevel;
     }
   });

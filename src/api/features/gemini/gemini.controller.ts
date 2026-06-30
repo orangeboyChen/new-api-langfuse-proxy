@@ -32,23 +32,17 @@ function buildUpstreamHeaders(
     if (value) headers[name] = value;
   }
 
-  // x-goog-api-key: use config override if set, else forward request's
-  // x-goog-api-key, x-api-key, or extract from Authorization: Bearer ...
-  if (config.geminiApiKey) {
-    headers["x-goog-api-key"] = config.geminiApiKey;
+  const googKey = original.get("x-goog-api-key");
+  if (googKey) {
+    headers["x-goog-api-key"] = googKey;
   } else {
-    const googKey = original.get("x-goog-api-key");
-    if (googKey) {
-      headers["x-goog-api-key"] = googKey;
+    const apiKey = original.get("x-api-key");
+    if (apiKey) {
+      headers["x-goog-api-key"] = apiKey;
     } else {
-      const apiKey = original.get("x-api-key");
-      if (apiKey) {
-        headers["x-goog-api-key"] = apiKey;
-      } else {
-        const auth = original.get("authorization");
-        if (auth?.startsWith("Bearer ")) {
-          headers["x-goog-api-key"] = auth.slice(7);
-        }
+      const auth = original.get("authorization");
+      if (auth?.startsWith("Bearer ")) {
+        headers["x-goog-api-key"] = auth.slice(7);
       }
     }
   }
@@ -137,7 +131,7 @@ export const geminiController = new Elysia().all(
 
     // 3. Build upstream URL
     const url = new URL(request.url);
-    const upstreamUrl = `${config.geminiBaseUrl}/v1beta/${path}${url.search}`;
+    const upstreamUrl = `${config.upstreamBaseUrl}/v1beta/${path}${url.search}`;
 
     // 4. Build upstream headers
     const upstreamHeaders = buildUpstreamHeaders(request.headers, traceId);

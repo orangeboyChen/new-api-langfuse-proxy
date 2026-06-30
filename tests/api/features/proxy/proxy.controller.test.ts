@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Elysia } from "elysia";
 import {
   deepseekController,
+  passthroughController,
   proxyController,
 } from "@/api/features/proxy/proxy.controller";
 import logger from "@/api/lib/logger";
@@ -49,9 +50,6 @@ beforeAll(() => {
   mockBaseUrl = `http://localhost:${mockServer.port}`;
   config.upstreamBaseUrl = mockBaseUrl;
   config.proxyApiKey = "";
-  config.upstreamApiKey = "";
-  config.deepseekBaseUrl = mockBaseUrl;
-  config.deepseekApiKey = "";
 });
 
 afterAll(() => {
@@ -137,6 +135,36 @@ describe("proxyController", () => {
       expect(res.status).toBe(200);
     } finally {
       config.proxyApiKey = "";
+    }
+  });
+
+  test("forwards consumer Authorization to upstream", async () => {
+    let capturedAuth = "";
+    const captureServer = Bun.serve({
+      port: 0,
+      fetch(req) {
+        capturedAuth = req.headers.get("authorization") || "";
+        return new Response(JSON.stringify({ data: [] }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createApp();
+      await app.handle(
+        new Request("http://localhost/v1/models", {
+          method: "GET",
+          headers: { Authorization: "Bearer client-key" },
+        }),
+      );
+
+      expect(capturedAuth).toBe("Bearer client-key");
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
     }
   });
 
@@ -269,10 +297,56 @@ describe("proxyController", () => {
   });
 });
 
+describe("passthroughController", () => {
+  const createPassthroughApp = () => new Elysia().use(passthroughController);
+
+  test("continues passthrough for unmatched paths", async () => {
+    let capturedPath = "";
+    let capturedAuth = "";
+    const captureServer = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url);
+        capturedPath = `${url.pathname}${url.search}`;
+        capturedAuth = req.headers.get("authorization") || "";
+        return new Response(
+          JSON.stringify({
+            path: capturedPath,
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createPassthroughApp();
+      const res = await app.handle(
+        new Request("http://localhost/custom/route?foo=bar", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer passthrough-key",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ hello: "world" }),
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(capturedPath).toBe("/custom/route?foo=bar");
+      expect(capturedAuth).toBe("Bearer passthrough-key");
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
+  });
+});
+
 describe("deepseekController", () => {
   const createDeepseekApp = () => new Elysia().use(deepseekController);
 
-  test("remaps /deepseek/v1/* to upstream /v1/*", async () => {
+  test("forwards /deepseek/v1/* without rewriting path", async () => {
     let capturedPath = "";
     const captureServer = Bun.serve({
       port: 0,
@@ -288,8 +362,8 @@ describe("deepseekController", () => {
         );
       },
     });
-    const original = config.deepseekBaseUrl;
-    config.deepseekBaseUrl = `http://localhost:${captureServer.port}`;
+    const original = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
     try {
       const app = createDeepseekApp();
       const res = await app.handle(
@@ -304,11 +378,11 @@ describe("deepseekController", () => {
       );
 
       expect(res.status).toBe(200);
-      expect(capturedPath).toBe("/v1/chat/completions");
+      expect(capturedPath).toBe("/deepseek/v1/chat/completions");
       const data = (await res.json()) as Record<string, unknown>;
       expect(data.model).toBe("deepseek-chat");
     } finally {
-      config.deepseekBaseUrl = original;
+      config.upstreamBaseUrl = original;
       captureServer.stop();
     }
   });
@@ -324,8 +398,8 @@ describe("deepseekController", () => {
         });
       },
     });
-    const original = config.deepseekBaseUrl;
-    config.deepseekBaseUrl = `http://localhost:${captureServer.port}`;
+    const original = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
     try {
       const app = createDeepseekApp();
       await app.handle(
@@ -337,25 +411,28 @@ describe("deepseekController", () => {
 
       expect(capturedAuth).toBe("Bearer sk-deepseek-test");
     } finally {
-      config.deepseekBaseUrl = original;
+      config.upstreamBaseUrl = original;
       captureServer.stop();
     }
   });
 
   test("coexists with OpenAI catch-all without route collision", async () => {
-    let deepseekHit = false;
+    const seenPaths: string[] = [];
     const deepseekServer = Bun.serve({
       port: 0,
-      fetch() {
-        deepseekHit = true;
-        return new Response(
-          JSON.stringify({ model: "deepseek-chat", choices: [] }),
-          { headers: { "Content-Type": "application/json" } },
-        );
+      fetch(req) {
+        const path = new URL(req.url).pathname;
+        seenPaths.push(path);
+        const model = path.startsWith("/deepseek/v1")
+          ? "deepseek-chat"
+          : "gpt-4o-mini";
+        return new Response(JSON.stringify({ model, choices: [] }), {
+          headers: { "Content-Type": "application/json" },
+        });
       },
     });
-    const original = config.deepseekBaseUrl;
-    config.deepseekBaseUrl = `http://localhost:${deepseekServer.port}`;
+    const original = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${deepseekServer.port}`;
     try {
       // Same mount order as app.ts: deepseek before the /v1/* catch-all
       const app = new Elysia().use(deepseekController).use(proxyController);
@@ -370,7 +447,6 @@ describe("deepseekController", () => {
       );
       const openaiData = (await openaiRes.json()) as Record<string, unknown>;
       expect(openaiData.model).toBe("gpt-4o-mini");
-      expect(deepseekHit).toBe(false);
 
       // DeepSeek path must reach the deepseek upstream
       const dsRes = await app.handle(
@@ -382,9 +458,10 @@ describe("deepseekController", () => {
       );
       const dsData = (await dsRes.json()) as Record<string, unknown>;
       expect(dsData.model).toBe("deepseek-chat");
-      expect(deepseekHit).toBe(true);
+      expect(seenPaths).toContain("/v1/chat/completions");
+      expect(seenPaths).toContain("/deepseek/v1/chat/completions");
     } finally {
-      config.deepseekBaseUrl = original;
+      config.upstreamBaseUrl = original;
       deepseekServer.stop();
     }
   });

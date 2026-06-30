@@ -28,11 +28,11 @@ Consumer  -->  Proxy  --------+--> Upstream Anthropic (/v1/messages)
 - **Multi-provider** — native support for OpenAI, Anthropic, Gemini, and DeepSeek APIs with provider-specific stream parsing and telemetry
 - **Passthrough auth** — consumers send their own API key, proxy forwards it upstream. No user management.
 - **OpenAI catch-all** — `ALL /v1/*` forwards any OpenAI-compatible request. Chat completions, embeddings, audio, images, assistants — all work automatically.
-- **DeepSeek routing** — `ALL /deepseek/v1/*` forwards to DeepSeek, reusing the OpenAI-compatible parsing and telemetry. Point an OpenAI SDK at the `/deepseek/v1` base path; the consumer's key is forwarded.
-- **Streaming support** — SSE streams are split and returned immediately. For OpenAI, the proxy injects `stream_options.include_usage` so Langfuse always gets token counts.
+- **DeepSeek routing** — `ALL /deepseek/v1/*` forwards to the same upstream, reusing the OpenAI-compatible parsing and telemetry.
+- **Fallback passthrough** — unmatched paths are forwarded to the upstream base URL instead of returning a local 404.
+- **Streaming support** — SSE streams are split and returned immediately without mutating the request body.
 - **Full telemetry** — every request is logged to Langfuse with input messages, output content, model, full token usage breakdown, TTFB, and total duration.
 - **Optional auth gate** — set `PROXY_API_KEY` to require consumers to authenticate with the proxy itself (timing-safe comparison).
-- **Upstream key override** — set `UPSTREAM_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` to use a single key for all upstream requests regardless of what consumers send.
 - **Graceful shutdown** — SIGTERM/SIGINT stops accepting connections, waits for in-flight requests, and flushes Langfuse before exiting.
 
 ## Getting Started
@@ -202,11 +202,12 @@ curl http://localhost:3000/api/health
 | `ALL /v1beta/*`       | Gemini pass-through — forwards to Gemini API                       |
 | `ALL /deepseek/v1/*`  | DeepSeek pass-through (OpenAI-compatible), forwards to DeepSeek API |
 | `ALL /v1/*`           | OpenAI catch-all — forwards any request to upstream provider       |
-| `GET /api/health`     | Health check — returns app version and per-provider reachability   |
+| `ALL /*`              | Fallback passthrough — forwards unmatched paths to upstream base URL |
+| `GET /api/health`     | Health check — returns app version and upstream reachability       |
 
 > Routes are matched in order: `/v1/messages` is matched before the `/v1/*` catch-all, so Anthropic requests are routed correctly. The `/deepseek/v1/*` prefix does not overlap `/v1/*`, so its mount order does not matter.
 
-The health endpoint returns per-provider status:
+The health endpoint returns upstream status:
 
 ```json
 {
@@ -214,15 +215,12 @@ The health endpoint returns per-provider status:
   "version": "0.0.0",
   "status": "ok",
   "upstream": {
-    "openai": "ok",
-    "anthropic": "ok",
-    "gemini": "not_configured"
+    "newapi": "ok"
   }
 }
 ```
 
-- `status` is `"degraded"` if OpenAI is unreachable or any configured provider has errors
-- Anthropic and Gemini show `"not_configured"` if their API key is not set
+- `status` is `"degraded"` if the upstream is unreachable
 
 ## Langfuse Telemetry
 
@@ -265,20 +263,9 @@ Leave `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` empty to disable telemetry
 | `LOG_LEVEL`                | Pino log level (`debug`, `info`, `warn`, `error`, `silent`) | `info`                                      |
 | **OpenAI / catch-all**     |                                                             |                                             |
 | `UPSTREAM_BASE_URL`        | Upstream LLM provider base URL                              | `https://api.openai.com`                    |
-| `UPSTREAM_API_KEY`         | Override consumer's key for upstream (optional)             | -                                           |
 | `PROXY_API_KEY`            | Gate consumers with this key (optional)                     | -                                           |
 | `PROXY_TIMEOUT_MS`         | Upstream request timeout in ms                              | `300000` (5 min)                            |
 | `TELEMETRY_MAX_BODY_BYTES` | Max response body to buffer for telemetry                   | `1048576` (1MB)                             |
-| **Anthropic**              |                                                             |                                             |
-| `ANTHROPIC_BASE_URL`       | Anthropic API base URL                                      | `https://api.anthropic.com`                 |
-| `ANTHROPIC_API_KEY`        | Override consumer's key for Anthropic (optional)            | -                                           |
-| `ANTHROPIC_VERSION`        | Default `anthropic-version` header                          | `2023-06-01`                                |
-| **Gemini**                 |                                                             |                                             |
-| `GEMINI_BASE_URL`          | Gemini API base URL                                         | `https://generativelanguage.googleapis.com` |
-| `GEMINI_API_KEY`           | Override consumer's key for Gemini (optional)               | -                                           |
-| **DeepSeek**               |                                                             |                                             |
-| `DEEPSEEK_BASE_URL`        | DeepSeek API base URL (OpenAI-compatible)                  | `https://api.deepseek.com`                  |
-| `DEEPSEEK_API_KEY`         | Override consumer's key for DeepSeek (optional)             | -                                           |
 | **Langfuse**               |                                                             |                                             |
 | `LANGFUSE_BASE_URL`        | Langfuse instance URL                                       | `https://cloud.langfuse.com`                |
 | `LANGFUSE_PUBLIC_KEY`      | Langfuse public key (empty = telemetry disabled)            | -                                           |
