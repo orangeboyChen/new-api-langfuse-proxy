@@ -262,7 +262,6 @@ Leave `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` empty to disable telemetry
 | `LOG_LEVEL`                | Pino log level (`debug`, `info`, `warn`, `error`, `silent`) | `info`                                      |
 | **OpenAI / catch-all**     |                                                             |                                             |
 | `UPSTREAM_BASE_URL`        | Upstream LLM provider base URL                              | `https://api.openai.com`                    |
-| `PROXY_API_KEY`            | Gate consumers with this key (optional)                     | -                                           |
 | `PROXY_TIMEOUT_MS`         | Upstream request timeout in ms                              | `300000` (5 min)                            |
 | `TELEMETRY_MAX_BODY_BYTES` | Max response body to buffer for telemetry                   | `1048576` (1MB)                             |
 | **Langfuse**               |                                                             |                                             |

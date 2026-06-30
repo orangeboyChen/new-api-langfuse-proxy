@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { gzipSync } from "node:zlib";
 import { Elysia } from "elysia";
 import {
   deepseekController,
@@ -80,6 +81,95 @@ describe("proxyController", () => {
     ).toBe("Hi there!");
   });
 
+  test("forwards JSON body to upstream when telemetry reads a clone", async () => {
+    let capturedBody = "";
+    const captureServer = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        capturedBody = await req.text();
+        return new Response(
+          JSON.stringify({
+            model: "gpt-4o-mini",
+            choices: [{ message: { role: "assistant", content: "Hi there!" } }],
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createApp();
+      const payload = {
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: "hello" }],
+      };
+      const res = await app.handle(
+        new Request("http://localhost/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(capturedBody).toBe(JSON.stringify(payload));
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
+  });
+
+  test("forwards compressed JSON bytes unchanged to upstream", async () => {
+    const payload = {
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: "hello compressed world" }],
+    };
+    const compressed = gzipSync(
+      new TextEncoder().encode(JSON.stringify(payload)),
+    );
+    let capturedEncoding = "";
+    let capturedBody = new Uint8Array();
+    const captureServer = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        capturedEncoding = req.headers.get("content-encoding") || "";
+        capturedBody = new Uint8Array(await req.arrayBuffer());
+        return new Response(
+          JSON.stringify({
+            model: "gpt-4o-mini",
+            choices: [{ message: { role: "assistant", content: "Hi there!" } }],
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createApp();
+      const res = await app.handle(
+        new Request("http://localhost/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Encoding": "gzip",
+          },
+          body: compressed,
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(capturedEncoding).toBe("gzip");
+      expect(Array.from(capturedBody)).toEqual(Array.from(compressed));
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
+  });
+
   test("returns x-request-id header", async () => {
     const app = createApp();
     const res = await app.handle(
@@ -125,6 +215,61 @@ describe("proxyController", () => {
       );
 
       expect(capturedAuth).toBe("Bearer client-key");
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
+  });
+
+  test("does not forward proxy-only headers to /v1 upstream", async () => {
+    let capturedSessionId = "";
+    let capturedUserId = "";
+    let capturedTags = "";
+    let capturedMetadata = "";
+    let capturedCookie = "";
+    const captureServer = Bun.serve({
+      port: 0,
+      fetch(req) {
+        capturedSessionId = req.headers.get("x-session-id") || "";
+        capturedUserId = req.headers.get("x-user-id") || "";
+        capturedTags = req.headers.get("x-langfuse-tags") || "";
+        capturedMetadata = req.headers.get("x-langfuse-metadata") || "";
+        capturedCookie = req.headers.get("cookie") || "";
+        return new Response(JSON.stringify({ data: [] }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createApp();
+      const res = await app.handle(
+        new Request("http://localhost/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer client-key",
+            "x-session-id": "sess-abc-123",
+            "x-user-id": "tenant-acme",
+            "x-langfuse-tags": "premium, internal",
+            "x-langfuse-metadata": JSON.stringify({ orgId: "org_123" }),
+            cookie: "proxy-session=secret",
+          },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(capturedSessionId).toBe("");
+      expect(capturedUserId).toBe("");
+      expect(capturedTags).toBe("");
+      expect(capturedMetadata).toBe("");
+      expect(capturedCookie).toBe("");
     } finally {
       config.upstreamBaseUrl = originalUrl;
       captureServer.stop();
@@ -230,6 +375,38 @@ describe("proxyController", () => {
     expect(res.status).toBe(200);
   });
 
+  test("strips compressed entity headers from upstream responses", async () => {
+    const compressed = gzipSync(JSON.stringify({ data: [] }));
+    const captureServer = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(compressed, {
+          headers: {
+            "Content-Type": "application/json",
+            "content-encoding": "gzip",
+            "content-length": String(compressed.byteLength),
+          },
+        });
+      },
+    });
+
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createApp();
+      const res = await app.handle(
+        new Request("http://localhost/v1/models", { method: "GET" }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-encoding")).toBeNull();
+      expect(res.headers.get("content-length")).toBeNull();
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
+  });
+
   test("preserves query string", async () => {
     let capturedUrl = "";
     const captureServer = Bun.serve({
@@ -268,6 +445,11 @@ describe("passthroughController", () => {
     let capturedAuth = "";
     let capturedApiKey = "";
     let capturedGoogKey = "";
+    let capturedSessionId = "";
+    let capturedUserId = "";
+    let capturedTags = "";
+    let capturedMetadata = "";
+    let capturedCookie = "";
     const captureServer = Bun.serve({
       port: 0,
       fetch(req) {
@@ -276,6 +458,11 @@ describe("passthroughController", () => {
         capturedAuth = req.headers.get("authorization") || "";
         capturedApiKey = req.headers.get("x-api-key") || "";
         capturedGoogKey = req.headers.get("x-goog-api-key") || "";
+        capturedSessionId = req.headers.get("x-session-id") || "";
+        capturedUserId = req.headers.get("x-user-id") || "";
+        capturedTags = req.headers.get("x-langfuse-tags") || "";
+        capturedMetadata = req.headers.get("x-langfuse-metadata") || "";
+        capturedCookie = req.headers.get("cookie") || "";
         return new Response(
           JSON.stringify({
             path: capturedPath,
@@ -296,6 +483,11 @@ describe("passthroughController", () => {
             Authorization: "Bearer passthrough-key",
             "x-api-key": "plain-key",
             "x-goog-api-key": "goog-key",
+            "x-session-id": "sess-abc-123",
+            "x-user-id": "tenant-acme",
+            "x-langfuse-tags": "premium, internal",
+            "x-langfuse-metadata": JSON.stringify({ orgId: "org_123" }),
+            cookie: "proxy-session=secret",
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ hello: "world" }),
@@ -307,6 +499,50 @@ describe("passthroughController", () => {
       expect(capturedAuth).toBe("Bearer passthrough-key");
       expect(capturedApiKey).toBe("plain-key");
       expect(capturedGoogKey).toBe("goog-key");
+      expect(capturedSessionId).toBe("");
+      expect(capturedUserId).toBe("");
+      expect(capturedTags).toBe("");
+      expect(capturedMetadata).toBe("");
+      expect(capturedCookie).toBe("");
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
+  });
+
+  test("preserves request content-encoding on passthrough uploads", async () => {
+    const payload = gzipSync(new TextEncoder().encode("compressed payload"));
+    let capturedEncoding = "";
+    let capturedBody = new Uint8Array();
+    const captureServer = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        capturedEncoding = req.headers.get("content-encoding") || "";
+        capturedBody = new Uint8Array(await req.arrayBuffer());
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createPassthroughApp();
+      const res = await app.handle(
+        new Request("http://localhost/custom/upload", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Encoding": "gzip",
+          },
+          body: payload,
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(capturedEncoding).toBe("gzip");
+      expect(Array.from(capturedBody)).toEqual(Array.from(payload));
     } finally {
       config.upstreamBaseUrl = originalUrl;
       captureServer.stop();
@@ -387,6 +623,54 @@ describe("deepseekController", () => {
     }
   });
 
+  test("does not forward proxy-only headers to deepseek upstream", async () => {
+    let capturedSessionId = "";
+    let capturedUserId = "";
+    let capturedTags = "";
+    let capturedMetadata = "";
+    let capturedCookie = "";
+    const captureServer = Bun.serve({
+      port: 0,
+      fetch(req) {
+        capturedSessionId = req.headers.get("x-session-id") || "";
+        capturedUserId = req.headers.get("x-user-id") || "";
+        capturedTags = req.headers.get("x-langfuse-tags") || "";
+        capturedMetadata = req.headers.get("x-langfuse-metadata") || "";
+        capturedCookie = req.headers.get("cookie") || "";
+        return new Response(JSON.stringify({ data: [] }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    const original = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createDeepseekApp();
+      const res = await app.handle(
+        new Request("http://localhost/deepseek/v1/models", {
+          method: "GET",
+          headers: {
+            "x-session-id": "sess-abc-123",
+            "x-user-id": "tenant-acme",
+            "x-langfuse-tags": "premium, internal",
+            "x-langfuse-metadata": JSON.stringify({ orgId: "org_123" }),
+            cookie: "proxy-session=secret",
+          },
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(capturedSessionId).toBe("");
+      expect(capturedUserId).toBe("");
+      expect(capturedTags).toBe("");
+      expect(capturedMetadata).toBe("");
+      expect(capturedCookie).toBe("");
+    } finally {
+      config.upstreamBaseUrl = original;
+      captureServer.stop();
+    }
+  });
+
   test("coexists with OpenAI catch-all without route collision", async () => {
     const seenPaths: string[] = [];
     const deepseekServer = Bun.serve({
@@ -394,7 +678,7 @@ describe("deepseekController", () => {
       fetch(req) {
         const path = new URL(req.url).pathname;
         seenPaths.push(path);
-        const model = path.startsWith("/deepseek/v1")
+        const model = path.includes("/deepseek/v1")
           ? "deepseek-chat"
           : "gpt-4o-mini";
         return new Response(JSON.stringify({ model, choices: [] }), {
@@ -403,7 +687,7 @@ describe("deepseekController", () => {
       },
     });
     const original = config.upstreamBaseUrl;
-    config.upstreamBaseUrl = `http://localhost:${deepseekServer.port}`;
+    config.upstreamBaseUrl = `http://localhost:${deepseekServer.port}/api`;
     try {
       // Same mount order as app.ts: deepseek before the /v1/* catch-all
       const app = new Elysia().use(deepseekController).use(proxyController);
@@ -429,8 +713,8 @@ describe("deepseekController", () => {
       );
       const dsData = (await dsRes.json()) as Record<string, unknown>;
       expect(dsData.model).toBe("deepseek-chat");
-      expect(seenPaths).toContain("/v1/chat/completions");
-      expect(seenPaths).toContain("/deepseek/v1/chat/completions");
+      expect(seenPaths).toContain("/api/v1/chat/completions");
+      expect(seenPaths).toContain("/api/deepseek/v1/chat/completions");
     } finally {
       config.upstreamBaseUrl = original;
       deepseekServer.stop();

@@ -15,7 +15,7 @@ export const healthController = new Elysia({ prefix: "/health" }).get(
         method: "HEAD",
         signal: AbortSignal.timeout(3000),
       });
-      if (!res.ok) upstream = "unreachable";
+      if (res.status >= 500) upstream = "unreachable";
     } catch {
       upstream = "unreachable";
     }

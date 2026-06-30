@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
 import Elysia from "elysia";
+import {
+  buildResponseHeaders,
+  buildUpstreamHeaders,
+} from "@/api/lib/header-forwarding";
 import { jsonError } from "@/api/lib/http";
 import {
   parseLangfuseMetadata,
@@ -10,65 +14,27 @@ import config from "@/config";
 import { reportErrorToLangfuse, reportToLangfuse } from "./proxy.telemetry";
 import type { ProxyRequestContext } from "./proxy.types";
 
-const HOP_BY_HOP_HEADERS = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-  "host",
-]);
-
-function copyHeaders(headers: Headers): Record<string, string> {
-  const copied: Record<string, string> = {};
-  headers.forEach((value, name) => {
-    if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase())) {
-      copied[name] = value;
-    }
-  });
-  return copied;
-}
-
-function buildUpstreamHeaders(
-  original: Headers,
-  traceId: string,
-): Record<string, string> {
-  return {
-    ...copyHeaders(original),
-    "x-request-id": traceId,
-  };
-}
-
-function buildResponseHeaders(
-  upstream: Headers,
-  traceId: string,
-): Record<string, string> {
-  return {
-    ...copyHeaders(upstream),
-    "x-request-id": traceId,
-  };
-}
-
 async function readRequestBodyForTelemetry(
   request: Request,
   contentType: string,
 ): Promise<{
-  bodyForUpstream: ReadableStream<Uint8Array> | null;
+  bodyForUpstream: string | ReadableStream<Uint8Array> | null;
   bodyTextForTelemetry: string | null;
 }> {
   if (request.method === "GET" || request.method === "HEAD") {
     return { bodyForUpstream: null, bodyTextForTelemetry: null };
   }
 
-  const bodyForUpstream = request.body;
   let bodyTextForTelemetry: string | null = null;
 
   if (contentType.includes("application/json")) {
     try {
-      bodyTextForTelemetry = await request.clone().text();
+      const cloned = request.clone();
+      bodyTextForTelemetry = await cloned.text();
+      return {
+        bodyForUpstream: request.body,
+        bodyTextForTelemetry,
+      };
     } catch {
       /* best-effort */
     }
@@ -85,12 +51,16 @@ async function readRequestBodyForTelemetry(
         }
       }
       bodyTextForTelemetry = JSON.stringify(fields);
+      return {
+        bodyForUpstream: request.body,
+        bodyTextForTelemetry,
+      };
     } catch {
       /* best-effort */
     }
   }
 
-  return { bodyForUpstream, bodyTextForTelemetry };
+  return { bodyForUpstream: request.body, bodyTextForTelemetry };
 }
 
 function buildUpstreamUrl(
@@ -98,7 +68,10 @@ function buildUpstreamUrl(
   path: string,
   search: string,
 ): string {
-  const url = new URL(path, baseUrl);
+  const url = new URL(baseUrl);
+  const basePath = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
+  const requestPath = path.startsWith("/") ? path : `/${path}`;
+  url.pathname = `${basePath}${requestPath}`;
   url.search = search;
   return url.toString();
 }
