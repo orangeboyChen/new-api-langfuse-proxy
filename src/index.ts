@@ -3,6 +3,18 @@ import logger, { deepSanitizeObject } from "@/api/lib/logger";
 import app from "@/app";
 import config from "@/config";
 
+// Global safety net: background work (e.g. Langfuse telemetry / SDK flush
+// timers) runs outside the request lifecycle and Elysia's onError. Without
+// these handlers, a single background failure (such as a null upstream
+// response inside the SDK) would crash the whole process and take the pod
+// down. Log and keep serving instead.
+process.on("uncaughtException", (error, origin) => {
+  logger.error({ err: error, origin }, "Uncaught exception (ignored)");
+});
+process.on("unhandledRejection", (reason) => {
+  logger.error({ err: reason }, "Unhandled promise rejection (ignored)");
+});
+
 const MAX_PORT_ATTEMPTS = 10;
 
 let port = config.port;

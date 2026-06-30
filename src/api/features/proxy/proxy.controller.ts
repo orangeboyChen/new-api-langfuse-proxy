@@ -63,6 +63,15 @@ async function readRequestBodyForTelemetry(
   return { bodyForUpstream: request.body, bodyTextForTelemetry };
 }
 
+/**
+ * Model catalog endpoints (list/retrieve models) carry no prompt/completion and
+ * are pure metadata lookups, so there is nothing meaningful to trace. Matches
+ * e.g. `/v1/models`, `/v1/models/{id}`, `/deepseek/v1/models`, `/v1beta/models`.
+ */
+function isNonTracedPath(path: string): boolean {
+  return /\/models(\/|$)/.test(path);
+}
+
 function buildUpstreamUrl(
   baseUrl: string,
   path: string,
@@ -160,13 +169,15 @@ async function handleProxyRequest({
       : "Upstream connection failed";
     const code = isTimeout ? "timeout" : "connection_error";
     logger.error({ err, upstreamUrl }, message);
-    reportErrorToLangfuse({
-      traceId,
-      startTime,
-      path: requestPath,
-      requestBody: bodyTextForTelemetry || "",
-      error: message,
-    });
+    if (!isNonTracedPath(requestPath)) {
+      reportErrorToLangfuse({
+        traceId,
+        startTime,
+        path: requestPath,
+        requestBody: bodyTextForTelemetry || "",
+        error: message,
+      });
+    }
     return jsonError(message, "server_error", code, 502);
   }
 
@@ -184,10 +195,7 @@ async function handleProxyRequest({
     });
   }
 
-  // 3. Tee stream for telemetry
-  const [clientStream, telemetryStream] = upstreamRes.body.tee();
-
-  // 4. Background telemetry (non-blocking)
+  // 3. Telemetry context
   const ctx: ProxyRequestContext = {
     traceId,
     sessionId,
@@ -206,9 +214,62 @@ async function handleProxyRequest({
     latencyMs,
     provider,
   };
-  reportToLangfuse(telemetryStream, ctx).catch((err) =>
-    logger.error({ err }, "Langfuse telemetry failed"),
-  );
+
+  // 4. Single-reader pump (NOT body.tee()).
+  //
+  // We forward upstream -> client through a single reader while collecting the
+  // bytes on the side for telemetry. We deliberately avoid `upstreamRes.body
+  // .tee()`: when the client disconnects mid-stream, Bun cancels one tee branch
+  // (its controller becomes null) while the upstream abort errors the shared
+  // source. The native tee implementation then dispatches that error onto the
+  // already-nulled controller, throwing `TypeError: null is not an object`
+  // inside a stream callback that escapes every `.catch()` and Elysia's
+  // onError, crashing the whole process. A single reader has no second
+  // controller to race, so this can't happen.
+  const reader = upstreamRes.body.getReader();
+  const collected: Uint8Array[] = [];
+  let telemetryFired = false;
+  const fireTelemetry = () => {
+    if (telemetryFired) return;
+    telemetryFired = true;
+    // Skip tracing for non-traced paths (e.g. model catalog endpoints). The
+    // client stream is pumped independently, so skipping here does not affect
+    // draining or backpressure.
+    if (isNonTracedPath(requestPath)) return;
+    const telemetryStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of collected) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    reportToLangfuse(telemetryStream, ctx).catch((err) =>
+      logger.error({ err }, "Langfuse telemetry failed"),
+    );
+  };
+
+  const clientStream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          fireTelemetry();
+          return;
+        }
+        collected.push(value);
+        controller.enqueue(value);
+      } catch (err) {
+        controller.error(err);
+        fireTelemetry();
+      }
+    },
+    cancel() {
+      // Client disconnected: stop pulling upstream, then report what we have.
+      abortController.abort();
+      reader.cancel().catch(() => {});
+      fireTelemetry();
+    },
+  });
 
   // 5. Return response immediately
   return new Response(clientStream, {
