@@ -72,6 +72,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       PACKAGE_VERSION: ${{ needs.prepare.outputs.version }}
+      IMAGE_REPO: ${{ needs.prepare.outputs.image_repo }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -105,6 +106,9 @@ jobs:
           file: Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
+          tags: |
+            ${{ env.IMAGE_REPO }}:${{ env.PACKAGE_VERSION }}-${{ env.PLATFORM_PAIR }}
+            ${{ env.IMAGE_REPO }}:${{ github.sha }}-${{ env.PLATFORM_PAIR }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
