@@ -31,6 +31,8 @@ FROM --platform=$TARGETPLATFORM oven/bun:1-alpine AS release
 
 WORKDIR /app
 
+ENV NODE_ENV=production
+
 # Copy compiled binary
 COPY --from=build /app/server server
 COPY --from=build /app/package.json package.json
