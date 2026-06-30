@@ -13,5 +13,5 @@
       "source.organizeImports.biome": "explicit"
     }
   },
-  "editor.formatOnSave": true,
+  "editor.formatOnSave": true
 }

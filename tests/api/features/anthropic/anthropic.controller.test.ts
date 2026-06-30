@@ -20,6 +20,7 @@ beforeAll(() => {
 
         // Echo back headers for verification
         const apiKey = req.headers.get("x-api-key") || "";
+        const authorization = req.headers.get("authorization") || "";
         const version = req.headers.get("anthropic-version") || "";
         const beta = req.headers.get("anthropic-beta") || "";
 
@@ -62,7 +63,7 @@ beforeAll(() => {
             model: "claude-sonnet-4-20250514",
             stop_reason: "end_turn",
             usage: { input_tokens: 10, output_tokens: 3 },
-            _echo: { apiKey, version, beta },
+            _echo: { apiKey, authorization, version, beta },
           }),
           {
             headers: {
@@ -84,9 +85,7 @@ beforeAll(() => {
     },
   });
   mockBaseUrl = `http://localhost:${mockServer.port}`;
-  config.anthropicBaseUrl = mockBaseUrl;
-  config.proxyApiKey = "";
-  config.anthropicApiKey = "";
+  config.upstreamBaseUrl = mockBaseUrl;
 });
 
 afterAll(() => {
@@ -149,34 +148,29 @@ describe("anthropicController", () => {
     expect(data._echo?.beta).toBe("max-tokens-3-5-sonnet-2024-07-15");
   });
 
-  test("uses config anthropicApiKey when set", async () => {
-    config.anthropicApiKey = "sk-ant-server-key";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request("http://localhost/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": "sk-ant-client-key",
-            "anthropic-version": "2023-06-01",
-          },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 100,
-            messages: [{ role: "user", content: "test" }],
-          }),
+  test("keeps consumer x-api-key on passthrough", async () => {
+    const app = createApp();
+    const res = await app.handle(
+      new Request("http://localhost/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": "sk-ant-client-key",
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 100,
+          messages: [{ role: "user", content: "test" }],
         }),
-      );
+      }),
+    );
 
-      const data = (await res.json()) as Record<string, { apiKey: string }>;
-      expect(data._echo?.apiKey).toBe("sk-ant-server-key");
-    } finally {
-      config.anthropicApiKey = "";
-    }
+    const data = (await res.json()) as Record<string, { apiKey: string }>;
+    expect(data._echo?.apiKey).toBe("sk-ant-client-key");
   });
 
-  test("extracts API key from Authorization Bearer header", async () => {
+  test("keeps Authorization Bearer header on passthrough", async () => {
     const app = createApp();
     const res = await app.handle(
       new Request("http://localhost/v1/messages", {
@@ -194,8 +188,11 @@ describe("anthropicController", () => {
       }),
     );
 
-    const data = (await res.json()) as Record<string, { apiKey: string }>;
-    expect(data._echo?.apiKey).toBe("sk-ant-from-bearer");
+    const data = (await res.json()) as Record<
+      string,
+      { authorization: string }
+    >;
+    expect(data._echo?.authorization).toBe("Bearer sk-ant-from-bearer");
   });
 
   test("forwards x-user-id without error", async () => {
@@ -329,90 +326,10 @@ describe("anthropicController", () => {
     expect(res.status).toBe(200);
   });
 
-  test("enforces proxy API key when configured", async () => {
-    config.proxyApiKey = "test-key";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request("http://localhost/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": "wrong-key",
-            "anthropic-version": "2023-06-01",
-          },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 100,
-            messages: [{ role: "user", content: "hi" }],
-          }),
-        }),
-      );
-
-      expect(res.status).toBe(401);
-      const data = (await res.json()) as { error: { code: string } };
-      expect(data.error.code).toBe("invalid_api_key");
-    } finally {
-      config.proxyApiKey = "";
-    }
-  });
-
-  test("allows request with correct proxy API key via x-api-key", async () => {
-    config.proxyApiKey = "test-key";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request("http://localhost/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": "test-key",
-            "anthropic-version": "2023-06-01",
-          },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 100,
-            messages: [{ role: "user", content: "hi" }],
-          }),
-        }),
-      );
-
-      expect(res.status).toBe(200);
-    } finally {
-      config.proxyApiKey = "";
-    }
-  });
-
-  test("allows request with correct proxy API key via Authorization Bearer", async () => {
-    config.proxyApiKey = "test-key";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request("http://localhost/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: "Bearer test-key",
-            "anthropic-version": "2023-06-01",
-          },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 100,
-            messages: [{ role: "user", content: "hi" }],
-          }),
-        }),
-      );
-
-      expect(res.status).toBe(200);
-    } finally {
-      config.proxyApiKey = "";
-    }
-  });
-
   test("returns 502 for unreachable upstream", async () => {
-    const originalUrl = config.anthropicBaseUrl;
+    const originalUrl = config.upstreamBaseUrl;
     const originalLevel = logger.level;
-    config.anthropicBaseUrl = "http://localhost:1";
+    config.upstreamBaseUrl = "http://localhost:1";
     logger.level = "silent";
     try {
       const app = createApp();
@@ -436,7 +353,7 @@ describe("anthropicController", () => {
       const data = (await res.json()) as { error: { code: string } };
       expect(data.error.code).toBe("connection_error");
     } finally {
-      config.anthropicBaseUrl = originalUrl;
+      config.upstreamBaseUrl = originalUrl;
       logger.level = originalLevel;
     }
   });
@@ -469,7 +386,7 @@ describe("anthropicController", () => {
     expect(body).toContain("Hi!");
   });
 
-  test("forwards anthropic- prefixed response headers", async () => {
+  test("forwards response headers without filtering provider-specific values", async () => {
     const app = createApp();
     const res = await app.handle(
       new Request("http://localhost/v1/messages", {
@@ -488,31 +405,6 @@ describe("anthropicController", () => {
     );
 
     expect(res.headers.get("anthropic-ratelimit-remaining")).toBe("99");
-  });
-
-  test("falls back to config anthropicVersion when not in request", async () => {
-    config.anthropicVersion = "2024-01-01";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request("http://localhost/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": "test",
-          },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 100,
-            messages: [{ role: "user", content: "test" }],
-          }),
-        }),
-      );
-
-      const data = (await res.json()) as Record<string, { version: string }>;
-      expect(data._echo?.version).toBe("2024-01-01");
-    } finally {
-      config.anthropicVersion = "2023-06-01";
-    }
+    expect(res.headers.get("request-id")).toBe("req_test");
   });
 });

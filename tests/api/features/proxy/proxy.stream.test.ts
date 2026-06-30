@@ -68,6 +68,31 @@ describe("parseSSEResponse", () => {
     });
   });
 
+  test("parses streaming responses output_text deltas", () => {
+    const raw = [
+      "event: response.created",
+      'data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-4.1"}}',
+      "",
+      "event: response.output_text.delta",
+      'data: {"type":"response.output_text.delta","delta":"Hello"}',
+      "",
+      "event: response.output_text.delta",
+      'data: {"type":"response.output_text.delta","delta":" world"}',
+      "",
+      "event: response.completed",
+      'data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-4.1","output":[{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"Hello world"}]}],"usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}}',
+    ].join("\n");
+
+    const result = parseSSEResponse(raw);
+    expect(result.model).toBe("gpt-4.1");
+    expect(result.content).toBe("Hello world");
+    expect(result.usage).toEqual({
+      input_tokens: 8,
+      output_tokens: 2,
+      total_tokens: 10,
+    });
+  });
+
   test("handles empty stream", () => {
     const result = parseSSEResponse("");
     expect(result.model).toBeNull();
@@ -91,6 +116,39 @@ describe("parseJSONResponse", () => {
       prompt_tokens: 5,
       completion_tokens: 1,
       total_tokens: 6,
+    });
+  });
+
+  test("parses OpenAI responses JSON", () => {
+    const raw = JSON.stringify({
+      object: "response",
+      id: "resp_1",
+      model: "gpt-4.1",
+      output: [
+        {
+          type: "message",
+          id: "msg_1",
+          role: "assistant",
+          content: [
+            { type: "output_text", text: "Hello" },
+            { type: "output_text", text: " world" },
+          ],
+        },
+      ],
+      usage: {
+        input_tokens: 12,
+        output_tokens: 2,
+        total_tokens: 14,
+      },
+    });
+
+    const result = parseJSONResponse(raw);
+    expect(result.model).toBe("gpt-4.1");
+    expect(result.content).toBe("Hello world");
+    expect(result.usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 2,
+      total_tokens: 14,
     });
   });
 

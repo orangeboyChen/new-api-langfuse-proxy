@@ -6,20 +6,11 @@ const {
   PORT,
   LOG_LEVEL,
   UPSTREAM_BASE_URL,
-  UPSTREAM_API_KEY,
-  PROXY_API_KEY,
   PROXY_TIMEOUT_MS,
   LANGFUSE_BASE_URL,
   LANGFUSE_PUBLIC_KEY,
   LANGFUSE_SECRET_KEY,
   TELEMETRY_MAX_BODY_BYTES,
-  ANTHROPIC_BASE_URL,
-  ANTHROPIC_API_KEY,
-  ANTHROPIC_VERSION,
-  GEMINI_BASE_URL,
-  GEMINI_API_KEY,
-  DEEPSEEK_BASE_URL,
-  DEEPSEEK_API_KEY,
 } = process.env;
 
 const config = {
@@ -31,8 +22,6 @@ const config = {
   env: (NODE_ENV || "development") as "development" | "production",
   logLevel: (LOG_LEVEL || "info") as LevelWithSilentOrString,
   upstreamBaseUrl: UPSTREAM_BASE_URL || "https://api.openai.com",
-  upstreamApiKey: UPSTREAM_API_KEY || "",
-  proxyApiKey: PROXY_API_KEY || "",
   proxyTimeoutMs: PROXY_TIMEOUT_MS ? Number(PROXY_TIMEOUT_MS) : 300_000,
   langfuseBaseUrl: LANGFUSE_BASE_URL || "",
   langfusePublicKey: LANGFUSE_PUBLIC_KEY || "",
@@ -40,13 +29,6 @@ const config = {
   telemetryMaxBodyBytes: TELEMETRY_MAX_BODY_BYTES
     ? Number(TELEMETRY_MAX_BODY_BYTES)
     : 1_048_576,
-  anthropicBaseUrl: ANTHROPIC_BASE_URL || "https://api.anthropic.com",
-  anthropicApiKey: ANTHROPIC_API_KEY || "",
-  anthropicVersion: ANTHROPIC_VERSION || "2023-06-01",
-  geminiBaseUrl: GEMINI_BASE_URL || "https://generativelanguage.googleapis.com",
-  geminiApiKey: GEMINI_API_KEY || "",
-  deepseekBaseUrl: DEEPSEEK_BASE_URL || "https://api.deepseek.com",
-  deepseekApiKey: DEEPSEEK_API_KEY || "",
 };
 
 export default config;

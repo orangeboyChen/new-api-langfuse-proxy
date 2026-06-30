@@ -16,10 +16,12 @@ beforeAll(() => {
       // List models endpoint
       if (url.pathname === "/v1beta/models" && req.method === "GET") {
         const apiKey = req.headers.get("x-goog-api-key") || "";
+        const authorization = req.headers.get("authorization") || "";
+        const xApiKey = req.headers.get("x-api-key") || "";
         return new Response(
           JSON.stringify({
             models: [{ name: "models/gemini-2.0-flash" }],
-            _echo: { apiKey },
+            _echo: { apiKey, authorization, xApiKey },
           }),
           { headers: { "Content-Type": "application/json" } },
         );
@@ -28,6 +30,8 @@ beforeAll(() => {
       // generateContent
       if (url.pathname.endsWith(":generateContent")) {
         const apiKey = req.headers.get("x-goog-api-key") || "";
+        const authorization = req.headers.get("authorization") || "";
+        const xApiKey = req.headers.get("x-api-key") || "";
         const googClient = req.headers.get("x-goog-api-client") || "";
         return new Response(
           JSON.stringify({
@@ -46,7 +50,7 @@ beforeAll(() => {
               totalTokenCount: 8,
             },
             modelVersion: "gemini-2.0-flash",
-            _echo: { apiKey, googClient },
+            _echo: { apiKey, authorization, xApiKey, googClient },
           }),
           {
             headers: {
@@ -82,9 +86,7 @@ beforeAll(() => {
     },
   });
   mockBaseUrl = `http://localhost:${mockServer.port}`;
-  config.geminiBaseUrl = mockBaseUrl;
-  config.proxyApiKey = "";
-  config.geminiApiKey = "";
+  config.upstreamBaseUrl = mockBaseUrl;
 });
 
 afterAll(() => {
@@ -139,40 +141,42 @@ describe("geminiController", () => {
     expect(res.status).toBe(200);
     const data = (await res.json()) as Record<
       string,
-      { apiKey: string; googClient: string }
+      {
+        apiKey: string;
+        authorization: string;
+        xApiKey: string;
+        googClient: string;
+      }
     >;
     expect(data._echo?.apiKey).toBe("my-gemini-key");
+    expect(data._echo?.authorization).toBe("");
+    expect(data._echo?.xApiKey).toBe("");
     expect(data._echo?.googClient).toBe("genai-js/1.0");
   });
 
-  test("uses config geminiApiKey override", async () => {
-    config.geminiApiKey = "server-gemini-key";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request(
-          "http://localhost/v1beta/models/gemini-2.0-flash:generateContent",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-goog-api-key": "client-key",
-            },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: "test" }] }],
-            }),
+  test("keeps consumer x-goog-api-key on passthrough", async () => {
+    const app = createApp();
+    const res = await app.handle(
+      new Request(
+        "http://localhost/v1beta/models/gemini-2.0-flash:generateContent",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": "client-key",
           },
-        ),
-      );
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: "test" }] }],
+          }),
+        },
+      ),
+    );
 
-      const data = (await res.json()) as Record<string, { apiKey: string }>;
-      expect(data._echo?.apiKey).toBe("server-gemini-key");
-    } finally {
-      config.geminiApiKey = "";
-    }
+    const data = (await res.json()) as Record<string, { apiKey: string }>;
+    expect(data._echo?.apiKey).toBe("client-key");
   });
 
-  test("extracts key from Authorization Bearer → x-goog-api-key", async () => {
+  test("keeps Authorization Bearer header on passthrough", async () => {
     const app = createApp();
     const res = await app.handle(
       new Request(
@@ -190,8 +194,11 @@ describe("geminiController", () => {
       ),
     );
 
-    const data = (await res.json()) as Record<string, { apiKey: string }>;
-    expect(data._echo?.apiKey).toBe("bearer-gemini-key");
+    const data = (await res.json()) as Record<
+      string,
+      { authorization: string }
+    >;
+    expect(data._echo?.authorization).toBe("Bearer bearer-gemini-key");
   });
 
   test("forwards x-user-id without error", async () => {
@@ -260,7 +267,7 @@ describe("geminiController", () => {
     expect(res.status).toBe(200);
   });
 
-  test("extracts key from x-api-key → x-goog-api-key", async () => {
+  test("keeps x-api-key header on passthrough", async () => {
     const app = createApp();
     const res = await app.handle(
       new Request(
@@ -278,8 +285,8 @@ describe("geminiController", () => {
       ),
     );
 
-    const data = (await res.json()) as Record<string, { apiKey: string }>;
-    expect(data._echo?.apiKey).toBe("xapi-gemini-key");
+    const data = (await res.json()) as Record<string, { xApiKey: string }>;
+    expect(data._echo?.xApiKey).toBe("xapi-gemini-key");
   });
 
   test("returns x-request-id header", async () => {
@@ -347,116 +354,10 @@ describe("geminiController", () => {
     expect(res.status).toBe(200);
   });
 
-  test("enforces proxy API key when configured", async () => {
-    config.proxyApiKey = "proxy-secret";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request(
-          "http://localhost/v1beta/models/gemini-2.0-flash:generateContent",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-goog-api-key": "wrong-key",
-            },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: "hi" }] }],
-            }),
-          },
-        ),
-      );
-
-      expect(res.status).toBe(401);
-      const data = (await res.json()) as { error: { code: string } };
-      expect(data.error.code).toBe("invalid_api_key");
-    } finally {
-      config.proxyApiKey = "";
-    }
-  });
-
-  test("accepts proxy key via x-api-key", async () => {
-    config.proxyApiKey = "proxy-secret";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request(
-          "http://localhost/v1beta/models/gemini-2.0-flash:generateContent",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": "proxy-secret",
-            },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: "hi" }] }],
-            }),
-          },
-        ),
-      );
-
-      expect(res.status).toBe(200);
-    } finally {
-      config.proxyApiKey = "";
-    }
-  });
-
-  test("accepts proxy key via Authorization Bearer", async () => {
-    config.proxyApiKey = "proxy-secret";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request(
-          "http://localhost/v1beta/models/gemini-2.0-flash:generateContent",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: "Bearer proxy-secret",
-            },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: "hi" }] }],
-            }),
-          },
-        ),
-      );
-
-      expect(res.status).toBe(200);
-    } finally {
-      config.proxyApiKey = "";
-    }
-  });
-
-  test("accepts proxy key via x-goog-api-key", async () => {
-    config.proxyApiKey = "proxy-secret";
-    try {
-      const app = createApp();
-      const res = await app.handle(
-        new Request(
-          "http://localhost/v1beta/models/gemini-2.0-flash:generateContent",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-goog-api-key": "proxy-secret",
-            },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: "hi" }] }],
-            }),
-          },
-        ),
-      );
-
-      expect(res.status).toBe(200);
-    } finally {
-      config.proxyApiKey = "";
-    }
-  });
-
   test("returns 502 for unreachable upstream", async () => {
-    const originalUrl = config.geminiBaseUrl;
+    const originalUrl = config.upstreamBaseUrl;
     const originalLevel = logger.level;
-    config.geminiBaseUrl = "http://localhost:1";
+    config.upstreamBaseUrl = "http://localhost:1";
     logger.level = "silent";
     try {
       const app = createApp();
@@ -480,7 +381,7 @@ describe("geminiController", () => {
       const data = (await res.json()) as { error: { code: string } };
       expect(data.error.code).toBe("connection_error");
     } finally {
-      config.geminiBaseUrl = originalUrl;
+      config.upstreamBaseUrl = originalUrl;
       logger.level = originalLevel;
     }
   });

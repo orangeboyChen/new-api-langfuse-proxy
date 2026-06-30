@@ -17,16 +17,14 @@ describe("healthController", () => {
       expect(data).toHaveProperty("status");
     });
 
-    test("returns per-provider upstream status", async () => {
+    test("returns upstream status", async () => {
       const app = createApp();
       const res = await app.handle(new Request("http://localhost/health"));
 
       const data = (await res.json()) as {
-        upstream: { openai: string; anthropic: string; gemini: string };
+        upstream: { newapi: string };
       };
-      expect(data.upstream).toHaveProperty("openai");
-      expect(data.upstream).toHaveProperty("anthropic");
-      expect(data.upstream).toHaveProperty("gemini");
+      expect(data.upstream).toHaveProperty("newapi");
     });
   });
 });

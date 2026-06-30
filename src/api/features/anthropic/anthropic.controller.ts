@@ -5,7 +5,7 @@ import {
   reportToLangfuse,
 } from "@/api/features/proxy/proxy.telemetry";
 import type { ProxyRequestContext } from "@/api/features/proxy/proxy.types";
-import { jsonError, timingSafeEqual } from "@/api/lib/http";
+import { jsonError } from "@/api/lib/http";
 import {
   parseLangfuseMetadata,
   parseLangfuseTags,
@@ -13,70 +13,43 @@ import {
 import logger from "@/api/lib/logger";
 import config from "@/config";
 
-const FORWARDED_REQUEST_HEADERS = ["content-type", "accept", "anthropic-beta"];
+const HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "host",
+]);
 
 function buildUpstreamHeaders(
   original: Headers,
   traceId: string,
 ): Record<string, string> {
-  const headers: Record<string, string> = {
-    "x-request-id": traceId,
-  };
-
-  for (const name of FORWARDED_REQUEST_HEADERS) {
-    const value = original.get(name);
-    if (value) headers[name] = value;
-  }
-
-  // anthropic-version: prefer request header, fall back to config
-  headers["anthropic-version"] =
-    original.get("anthropic-version") || config.anthropicVersion;
-
-  // x-api-key: use config override if set, else forward request's x-api-key,
-  // or extract token from Authorization: Bearer ...
-  if (config.anthropicApiKey) {
-    headers["x-api-key"] = config.anthropicApiKey;
-  } else {
-    const apiKey = original.get("x-api-key");
-    if (apiKey) {
-      headers["x-api-key"] = apiKey;
-    } else {
-      const auth = original.get("authorization");
-      if (auth?.startsWith("Bearer ")) {
-        headers["x-api-key"] = auth.slice(7);
-      }
+  const headers: Record<string, string> = {};
+  original.forEach((value, name) => {
+    if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase())) {
+      headers[name] = value;
     }
-  }
-
+  });
+  headers["x-request-id"] = traceId;
   return headers;
 }
-
-const FORWARDED_RESPONSE_HEADERS = ["content-type", "request-id"];
-const RESPONSE_HEADER_PREFIXES = ["anthropic-"];
 
 function buildResponseHeaders(
   upstream: Headers,
   traceId: string,
 ): Record<string, string> {
-  const headers: Record<string, string> = {
-    "x-request-id": traceId,
-  };
-
-  for (const name of FORWARDED_RESPONSE_HEADERS) {
-    const value = upstream.get(name);
-    if (value) headers[name] = value;
-  }
-
+  const headers: Record<string, string> = {};
   upstream.forEach((value, name) => {
-    const lower = name.toLowerCase();
-    for (const prefix of RESPONSE_HEADER_PREFIXES) {
-      if (lower.startsWith(prefix)) {
-        headers[name] = value;
-        break;
-      }
+    if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase())) {
+      headers[name] = value;
     }
   });
-
+  headers["x-request-id"] = traceId;
   return headers;
 }
 
@@ -94,25 +67,7 @@ export const anthropicController = new Elysia({ prefix: "/v1" }).all(
       request.headers.get("x-langfuse-metadata"),
     );
 
-    // 1. Auth gate
-    if (config.proxyApiKey) {
-      const authHeader = request.headers.get("authorization") || "";
-      const apiKeyHeader = request.headers.get("x-api-key") || "";
-      const expected = `Bearer ${config.proxyApiKey}`;
-      const keyMatch =
-        timingSafeEqual(authHeader, expected) ||
-        timingSafeEqual(apiKeyHeader, config.proxyApiKey);
-      if (!keyMatch) {
-        return jsonError(
-          "Invalid proxy API key",
-          "auth_error",
-          "invalid_api_key",
-          401,
-        );
-      }
-    }
-
-    // 2. Read request body
+    // 1. Read request body
     const contentType = request.headers.get("content-type") || "";
     const isJsonRequest = contentType.includes("application/json");
     let bodyForUpstream: string | ReadableStream<Uint8Array> | null = null;
@@ -127,14 +82,14 @@ export const anthropicController = new Elysia({ prefix: "/v1" }).all(
       }
     }
 
-    // 3. Build upstream URL
+    // 2. Build upstream URL
     const url = new URL(request.url);
-    const upstreamUrl = `${config.anthropicBaseUrl}/v1/messages${url.search}`;
+    const upstreamUrl = `${config.upstreamBaseUrl}/v1/messages${url.search}`;
 
-    // 4. Build upstream headers
+    // 3. Build upstream headers
     const upstreamHeaders = buildUpstreamHeaders(request.headers, traceId);
 
-    // 5. Fetch upstream with timeout and client disconnect propagation
+    // 4. Fetch upstream with timeout and client disconnect propagation
     const abortController = new AbortController();
     const timeoutId = setTimeout(
       () => abortController.abort(new DOMException("Timeout", "TimeoutError")),
@@ -170,7 +125,7 @@ export const anthropicController = new Elysia({ prefix: "/v1" }).all(
       return jsonError(message, "server_error", code, 502);
     }
 
-    // 6. Build response
+    // 5. Build response
     const isStreaming =
       upstreamRes.headers.get("content-type")?.includes("text/event-stream") ??
       false;
@@ -184,10 +139,10 @@ export const anthropicController = new Elysia({ prefix: "/v1" }).all(
       });
     }
 
-    // 7. Tee stream for telemetry
+    // 6. Tee stream for telemetry
     const [clientStream, telemetryStream] = upstreamRes.body.tee();
 
-    // 8. Background telemetry (non-blocking)
+    // 7. Background telemetry (non-blocking)
     const ctx: ProxyRequestContext = {
       traceId,
       sessionId,
@@ -210,7 +165,7 @@ export const anthropicController = new Elysia({ prefix: "/v1" }).all(
       logger.error({ err }, "Langfuse telemetry failed"),
     );
 
-    // 9. Return response immediately
+    // 8. Return response immediately
     return new Response(clientStream, {
       status: upstreamRes.status,
       headers: responseHeaders,

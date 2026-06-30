@@ -4,6 +4,7 @@ import { anthropicController } from "@/api/features/anthropic/anthropic.controll
 import { geminiController } from "@/api/features/gemini/gemini.controller";
 import {
   deepseekController,
+  passthroughController,
   proxyController,
 } from "@/api/features/proxy/proxy.controller";
 import logger from "@/api/lib/logger";
@@ -43,7 +44,8 @@ const app = new Elysia()
   .use(anthropicController)
   .use(geminiController)
   .use(deepseekController)
-  .use(proxyController);
+  .use(proxyController)
+  .use(passthroughController);
 
 export type App = typeof app;
 export default app;

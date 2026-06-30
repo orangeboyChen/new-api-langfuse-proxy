@@ -31,14 +31,7 @@ logger.info(
     deepSanitizeObject(
       { ...config, port },
       {
-        omitKeys: [
-          "upstreamApiKey",
-          "proxyApiKey",
-          "anthropicApiKey",
-          "geminiApiKey",
-          "langfusePublicKey",
-          "langfuseSecretKey",
-        ],
+        omitKeys: ["langfusePublicKey", "langfuseSecretKey"],
       },
     ),
     null,
