@@ -172,6 +172,61 @@ describe("proxyController", () => {
     }
   });
 
+  test("does not forward proxy-only headers to /v1 upstream", async () => {
+    let capturedSessionId = "";
+    let capturedUserId = "";
+    let capturedTags = "";
+    let capturedMetadata = "";
+    let capturedCookie = "";
+    const captureServer = Bun.serve({
+      port: 0,
+      fetch(req) {
+        capturedSessionId = req.headers.get("x-session-id") || "";
+        capturedUserId = req.headers.get("x-user-id") || "";
+        capturedTags = req.headers.get("x-langfuse-tags") || "";
+        capturedMetadata = req.headers.get("x-langfuse-metadata") || "";
+        capturedCookie = req.headers.get("cookie") || "";
+        return new Response(JSON.stringify({ data: [] }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createApp();
+      const res = await app.handle(
+        new Request("http://localhost/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer client-key",
+            "x-session-id": "sess-abc-123",
+            "x-user-id": "tenant-acme",
+            "x-langfuse-tags": "premium, internal",
+            "x-langfuse-metadata": JSON.stringify({ orgId: "org_123" }),
+            cookie: "proxy-session=secret",
+          },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(capturedSessionId).toBe("");
+      expect(capturedUserId).toBe("");
+      expect(capturedTags).toBe("");
+      expect(capturedMetadata).toBe("");
+      expect(capturedCookie).toBe("");
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
+  });
+
   test("returns 502 for unreachable upstream", async () => {
     const originalUrl = config.upstreamBaseUrl;
     const originalLevel = logger.level;
@@ -341,6 +396,11 @@ describe("passthroughController", () => {
     let capturedAuth = "";
     let capturedApiKey = "";
     let capturedGoogKey = "";
+    let capturedSessionId = "";
+    let capturedUserId = "";
+    let capturedTags = "";
+    let capturedMetadata = "";
+    let capturedCookie = "";
     const captureServer = Bun.serve({
       port: 0,
       fetch(req) {
@@ -349,6 +409,11 @@ describe("passthroughController", () => {
         capturedAuth = req.headers.get("authorization") || "";
         capturedApiKey = req.headers.get("x-api-key") || "";
         capturedGoogKey = req.headers.get("x-goog-api-key") || "";
+        capturedSessionId = req.headers.get("x-session-id") || "";
+        capturedUserId = req.headers.get("x-user-id") || "";
+        capturedTags = req.headers.get("x-langfuse-tags") || "";
+        capturedMetadata = req.headers.get("x-langfuse-metadata") || "";
+        capturedCookie = req.headers.get("cookie") || "";
         return new Response(
           JSON.stringify({
             path: capturedPath,
@@ -369,6 +434,11 @@ describe("passthroughController", () => {
             Authorization: "Bearer passthrough-key",
             "x-api-key": "plain-key",
             "x-goog-api-key": "goog-key",
+            "x-session-id": "sess-abc-123",
+            "x-user-id": "tenant-acme",
+            "x-langfuse-tags": "premium, internal",
+            "x-langfuse-metadata": JSON.stringify({ orgId: "org_123" }),
+            cookie: "proxy-session=secret",
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ hello: "world" }),
@@ -380,6 +450,11 @@ describe("passthroughController", () => {
       expect(capturedAuth).toBe("Bearer passthrough-key");
       expect(capturedApiKey).toBe("plain-key");
       expect(capturedGoogKey).toBe("goog-key");
+      expect(capturedSessionId).toBe("");
+      expect(capturedUserId).toBe("");
+      expect(capturedTags).toBe("");
+      expect(capturedMetadata).toBe("");
+      expect(capturedCookie).toBe("");
     } finally {
       config.upstreamBaseUrl = originalUrl;
       captureServer.stop();
@@ -454,6 +529,54 @@ describe("deepseekController", () => {
       );
 
       expect(capturedAuth).toBe("Bearer sk-deepseek-test");
+    } finally {
+      config.upstreamBaseUrl = original;
+      captureServer.stop();
+    }
+  });
+
+  test("does not forward proxy-only headers to deepseek upstream", async () => {
+    let capturedSessionId = "";
+    let capturedUserId = "";
+    let capturedTags = "";
+    let capturedMetadata = "";
+    let capturedCookie = "";
+    const captureServer = Bun.serve({
+      port: 0,
+      fetch(req) {
+        capturedSessionId = req.headers.get("x-session-id") || "";
+        capturedUserId = req.headers.get("x-user-id") || "";
+        capturedTags = req.headers.get("x-langfuse-tags") || "";
+        capturedMetadata = req.headers.get("x-langfuse-metadata") || "";
+        capturedCookie = req.headers.get("cookie") || "";
+        return new Response(JSON.stringify({ data: [] }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    const original = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createDeepseekApp();
+      const res = await app.handle(
+        new Request("http://localhost/deepseek/v1/models", {
+          method: "GET",
+          headers: {
+            "x-session-id": "sess-abc-123",
+            "x-user-id": "tenant-acme",
+            "x-langfuse-tags": "premium, internal",
+            "x-langfuse-metadata": JSON.stringify({ orgId: "org_123" }),
+            cookie: "proxy-session=secret",
+          },
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(capturedSessionId).toBe("");
+      expect(capturedUserId).toBe("");
+      expect(capturedTags).toBe("");
+      expect(capturedMetadata).toBe("");
+      expect(capturedCookie).toBe("");
     } finally {
       config.upstreamBaseUrl = original;
       captureServer.stop();

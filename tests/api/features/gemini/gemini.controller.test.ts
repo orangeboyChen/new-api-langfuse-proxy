@@ -19,10 +19,24 @@ beforeAll(() => {
         const apiKey = req.headers.get("x-goog-api-key") || "";
         const authorization = req.headers.get("authorization") || "";
         const xApiKey = req.headers.get("x-api-key") || "";
+        const sessionId = req.headers.get("x-session-id") || "";
+        const userId = req.headers.get("x-user-id") || "";
+        const tags = req.headers.get("x-langfuse-tags") || "";
+        const metadata = req.headers.get("x-langfuse-metadata") || "";
+        const cookie = req.headers.get("cookie") || "";
         return new Response(
           JSON.stringify({
             models: [{ name: "models/gemini-2.0-flash" }],
-            _echo: { apiKey, authorization, xApiKey },
+            _echo: {
+              apiKey,
+              authorization,
+              xApiKey,
+              sessionId,
+              userId,
+              tags,
+              metadata,
+              cookie,
+            },
           }),
           { headers: { "Content-Type": "application/json" } },
         );
@@ -34,6 +48,11 @@ beforeAll(() => {
         const authorization = req.headers.get("authorization") || "";
         const xApiKey = req.headers.get("x-api-key") || "";
         const googClient = req.headers.get("x-goog-api-client") || "";
+        const sessionId = req.headers.get("x-session-id") || "";
+        const userId = req.headers.get("x-user-id") || "";
+        const tags = req.headers.get("x-langfuse-tags") || "";
+        const metadata = req.headers.get("x-langfuse-metadata") || "";
+        const cookie = req.headers.get("cookie") || "";
         return new Response(
           JSON.stringify({
             candidates: [
@@ -51,7 +70,17 @@ beforeAll(() => {
               totalTokenCount: 8,
             },
             modelVersion: "gemini-2.0-flash",
-            _echo: { apiKey, authorization, xApiKey, googClient },
+            _echo: {
+              apiKey,
+              authorization,
+              xApiKey,
+              googClient,
+              sessionId,
+              userId,
+              tags,
+              metadata,
+              cookie,
+            },
           }),
           {
             headers: {
@@ -153,6 +182,46 @@ describe("geminiController", () => {
     expect(data._echo?.authorization).toBe("");
     expect(data._echo?.xApiKey).toBe("");
     expect(data._echo?.googClient).toBe("genai-js/1.0");
+  });
+
+  test("does not forward proxy-only headers upstream", async () => {
+    const app = createApp();
+    const res = await app.handle(
+      new Request(
+        "http://localhost/v1beta/models/gemini-2.0-flash:generateContent",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": "test-key",
+            "x-session-id": "sess-abc-123",
+            "x-user-id": "tenant-acme",
+            "x-langfuse-tags": "premium, internal",
+            "x-langfuse-metadata": JSON.stringify({ orgId: "org_123" }),
+            cookie: "proxy-session=secret",
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: "test" }] }],
+          }),
+        },
+      ),
+    );
+
+    const data = (await res.json()) as Record<
+      string,
+      {
+        sessionId: string;
+        userId: string;
+        tags: string;
+        metadata: string;
+        cookie: string;
+      }
+    >;
+    expect(data._echo?.sessionId).toBe("");
+    expect(data._echo?.userId).toBe("");
+    expect(data._echo?.tags).toBe("");
+    expect(data._echo?.metadata).toBe("");
+    expect(data._echo?.cookie).toBe("");
   });
 
   test("keeps consumer x-goog-api-key on passthrough", async () => {

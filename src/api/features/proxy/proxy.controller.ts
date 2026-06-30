@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
 import Elysia from "elysia";
+import {
+  buildResponseHeaders,
+  buildUpstreamHeaders,
+} from "@/api/lib/header-forwarding";
 import { jsonError } from "@/api/lib/http";
 import {
   parseLangfuseMetadata,
@@ -9,55 +13,6 @@ import logger from "@/api/lib/logger";
 import config from "@/config";
 import { reportErrorToLangfuse, reportToLangfuse } from "./proxy.telemetry";
 import type { ProxyRequestContext } from "./proxy.types";
-
-const HOP_BY_HOP_HEADERS = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-  "host",
-]);
-
-const ENTITY_HEADERS = new Set([
-  "content-encoding",
-  "content-length",
-  "content-md5",
-]);
-
-function copyHeaders(headers: Headers): Record<string, string> {
-  const copied: Record<string, string> = {};
-  headers.forEach((value, name) => {
-    const lower = name.toLowerCase();
-    if (!HOP_BY_HOP_HEADERS.has(lower) && !ENTITY_HEADERS.has(lower)) {
-      copied[name] = value;
-    }
-  });
-  return copied;
-}
-
-function buildUpstreamHeaders(
-  original: Headers,
-  traceId: string,
-): Record<string, string> {
-  return {
-    ...copyHeaders(original),
-    "x-request-id": traceId,
-  };
-}
-
-function buildResponseHeaders(
-  upstream: Headers,
-  traceId: string,
-): Record<string, string> {
-  return {
-    ...copyHeaders(upstream),
-    "x-request-id": traceId,
-  };
-}
 
 async function readRequestBodyForTelemetry(
   request: Request,

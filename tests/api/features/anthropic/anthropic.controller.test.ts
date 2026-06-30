@@ -24,6 +24,11 @@ beforeAll(() => {
         const authorization = req.headers.get("authorization") || "";
         const version = req.headers.get("anthropic-version") || "";
         const beta = req.headers.get("anthropic-beta") || "";
+        const sessionId = req.headers.get("x-session-id") || "";
+        const userId = req.headers.get("x-user-id") || "";
+        const tags = req.headers.get("x-langfuse-tags") || "";
+        const metadata = req.headers.get("x-langfuse-metadata") || "";
+        const cookie = req.headers.get("cookie") || "";
 
         if (isStreaming) {
           const body = [
@@ -64,7 +69,17 @@ beforeAll(() => {
             model: "claude-sonnet-4-20250514",
             stop_reason: "end_turn",
             usage: { input_tokens: 10, output_tokens: 3 },
-            _echo: { apiKey, authorization, version, beta },
+            _echo: {
+              apiKey,
+              authorization,
+              version,
+              beta,
+              sessionId,
+              userId,
+              tags,
+              metadata,
+              cookie,
+            },
           }),
           {
             headers: {
@@ -147,6 +162,46 @@ describe("anthropicController", () => {
     expect(data._echo?.apiKey).toBe("sk-ant-test");
     expect(data._echo?.version).toBe("2023-06-01");
     expect(data._echo?.beta).toBe("max-tokens-3-5-sonnet-2024-07-15");
+  });
+
+  test("does not forward proxy-only headers upstream", async () => {
+    const app = createApp();
+    const res = await app.handle(
+      new Request("http://localhost/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": "sk-ant-test",
+          "anthropic-version": "2023-06-01",
+          "x-session-id": "sess-abc-123",
+          "x-user-id": "tenant-acme",
+          "x-langfuse-tags": "premium, internal",
+          "x-langfuse-metadata": JSON.stringify({ orgId: "org_123" }),
+          cookie: "proxy-session=secret",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 100,
+          messages: [{ role: "user", content: "test" }],
+        }),
+      }),
+    );
+
+    const data = (await res.json()) as Record<
+      string,
+      {
+        sessionId: string;
+        userId: string;
+        tags: string;
+        metadata: string;
+        cookie: string;
+      }
+    >;
+    expect(data._echo?.sessionId).toBe("");
+    expect(data._echo?.userId).toBe("");
+    expect(data._echo?.tags).toBe("");
+    expect(data._echo?.metadata).toBe("");
+    expect(data._echo?.cookie).toBe("");
   });
 
   test("keeps consumer x-api-key on passthrough", async () => {

@@ -5,6 +5,10 @@ import {
   reportToLangfuse,
 } from "@/api/features/proxy/proxy.telemetry";
 import type { ProxyRequestContext } from "@/api/features/proxy/proxy.types";
+import {
+  buildResponseHeaders,
+  buildUpstreamHeaders,
+} from "@/api/lib/header-forwarding";
 import { jsonError } from "@/api/lib/http";
 import {
   parseLangfuseMetadata,
@@ -12,54 +16,6 @@ import {
 } from "@/api/lib/langfuse-headers";
 import logger from "@/api/lib/logger";
 import config from "@/config";
-
-const HOP_BY_HOP_HEADERS = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-  "host",
-]);
-
-const ENTITY_HEADERS = new Set([
-  "content-encoding",
-  "content-length",
-  "content-md5",
-]);
-
-function buildUpstreamHeaders(
-  original: Headers,
-  traceId: string,
-): Record<string, string> {
-  const headers: Record<string, string> = {};
-  original.forEach((value, name) => {
-    const lower = name.toLowerCase();
-    if (!HOP_BY_HOP_HEADERS.has(lower) && !ENTITY_HEADERS.has(lower)) {
-      headers[name] = value;
-    }
-  });
-  headers["x-request-id"] = traceId;
-  return headers;
-}
-
-function buildResponseHeaders(
-  upstream: Headers,
-  traceId: string,
-): Record<string, string> {
-  const headers: Record<string, string> = {};
-  upstream.forEach((value, name) => {
-    const lower = name.toLowerCase();
-    if (!HOP_BY_HOP_HEADERS.has(lower) && !ENTITY_HEADERS.has(lower)) {
-      headers[name] = value;
-    }
-  });
-  headers["x-request-id"] = traceId;
-  return headers;
-}
 
 export const geminiController = new Elysia().all(
   "/v1beta/*",
