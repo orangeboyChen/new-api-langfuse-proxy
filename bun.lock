@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "langfuse-proxy",
+      "name": "new-api-langfuse-proxy",
       "dependencies": {
         "elysia": "1.4.28",
         "langfuse": "^3.38.20",

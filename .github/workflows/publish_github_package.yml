@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  GITHUB_REPO: ghcr.io/${{ github.repository }}
+  REGISTRY: ghcr.io
 
 jobs:
   prepare:
@@ -16,6 +16,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      image_repo: ${{ steps.image.outputs.image_repo }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -47,6 +48,16 @@ jobs:
           echo "Latest tag: ${latest_tag:-<none>}"
           echo "Next tag: $next_tag"
 
+      - name: Normalize image repository
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_repo="${REGISTRY}/${GITHUB_REPOSITORY,,}"
+          echo "image_repo=$image_repo" >> "$GITHUB_OUTPUT"
+          echo "Image repository: $image_repo"
+
   build:
     needs:
       - prepare
@@ -56,6 +67,8 @@ jobs:
         include:
           - platform: linux/amd64
             runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env:
       PACKAGE_VERSION: ${{ needs.prepare.outputs.version }}
@@ -80,7 +93,7 @@ jobs:
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -92,10 +105,6 @@ jobs:
           file: Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
-          tags: |
-            ${{ env.GITHUB_REPO }}:latest
-            ${{ env.GITHUB_REPO }}:${{ github.sha }}
-            ${{ env.GITHUB_REPO }}:${{ needs.prepare.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -129,7 +138,7 @@ jobs:
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -140,21 +149,27 @@ jobs:
         working-directory: ${{ runner.temp }}/digests
         env:
           PACKAGE_VERSION: ${{ needs.prepare.outputs.version }}
+          IMAGE_REPO: ${{ needs.prepare.outputs.image_repo }}
         run: |
+          refs=()
+          for digest in *; do
+            refs+=("${IMAGE_REPO}@sha256:${digest}")
+          done
+
           docker buildx imagetools create \
-            -t ghcr.io/${{ github.repository }}:latest \
-            -t ghcr.io/${{ github.repository }}:${{ github.sha }} \
-            -t ghcr.io/${{ github.repository }}:${PACKAGE_VERSION} \
-            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+            -t ${IMAGE_REPO}:latest \
+            -t ${IMAGE_REPO}:${{ github.sha }} \
+            -t ${IMAGE_REPO}:${PACKAGE_VERSION} \
+            "${refs[@]}"
 
       - name: Inspect image
         env:
           PACKAGE_VERSION: ${{ needs.prepare.outputs.version }}
+          IMAGE_REPO: ${{ needs.prepare.outputs.image_repo }}
         run: |
-          REPO="ghcr.io/${{ github.repository }}"
-          docker buildx imagetools inspect ${REPO}:latest
-          docker buildx imagetools inspect ${REPO}:${{ github.sha }}
-          docker buildx imagetools inspect ${REPO}:${PACKAGE_VERSION}
+          docker buildx imagetools inspect ${IMAGE_REPO}:latest
+          docker buildx imagetools inspect ${IMAGE_REPO}:${{ github.sha }}
+          docker buildx imagetools inspect ${IMAGE_REPO}:${PACKAGE_VERSION}
 
   release:
     runs-on: ubuntu-latest

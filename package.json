@@ -1,12 +1,12 @@
 {
-  "name": "langfuse-proxy",
+  "name": "new-api-langfuse-proxy",
   "version": "0.0.0",
   "private": true,
   "module": "src/index.ts",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/fazer-ai/langfuse-proxy.git"
+    "url": "https://github.com/orangeboyChen/new-api-langfuse-proxy.git"
   },
   "scripts": {
     "dev": "bun --hot src/index.ts",
