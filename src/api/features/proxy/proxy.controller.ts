@@ -227,15 +227,26 @@ async function handleProxyRequest({
   // onError, crashing the whole process. A single reader has no second
   // controller to race, so this can't happen.
   const reader = upstreamRes.body.getReader();
+
+  // Bound the side buffer so the response path can never OOM the proxy. We only
+  // need at most TELEMETRY_MAX_BODY_BYTES (+ the single chunk that crosses the
+  // limit) to reconstruct the telemetry body: reportToLangfuse re-reads this
+  // buffer through consumeStream(), which decodes up to the limit and flags
+  // `truncated` when it sees more than the limit. Keeping the crossing chunk
+  // preserves that truncation signal while capping memory. Non-traced paths
+  // (e.g. model catalog endpoints) collect nothing at all.
+  const shouldCollect = !isNonTracedPath(requestPath);
   const collected: Uint8Array[] = [];
+  let collectedBytes = 0;
+  let collectionStopped = !shouldCollect;
+
   let telemetryFired = false;
   const fireTelemetry = () => {
     if (telemetryFired) return;
     telemetryFired = true;
-    // Skip tracing for non-traced paths (e.g. model catalog endpoints). The
-    // client stream is pumped independently, so skipping here does not affect
-    // draining or backpressure.
-    if (isNonTracedPath(requestPath)) return;
+    // The client stream is pumped independently, so skipping here does not
+    // affect draining or backpressure.
+    if (!shouldCollect) return;
     const telemetryStream = new ReadableStream<Uint8Array>({
       start(controller) {
         for (const chunk of collected) controller.enqueue(chunk);
@@ -256,7 +267,16 @@ async function handleProxyRequest({
           fireTelemetry();
           return;
         }
-        collected.push(value);
+        if (!collectionStopped) {
+          collected.push(value);
+          collectedBytes += value.byteLength;
+          // Stop once we have enough bytes to both reconstruct the body up to
+          // the limit and let consumeStream detect truncation. This caps the
+          // side buffer at ~limit + one chunk regardless of stream length.
+          if (collectedBytes > config.telemetryMaxBodyBytes) {
+            collectionStopped = true;
+          }
+        }
         controller.enqueue(value);
       } catch (err) {
         controller.error(err);
