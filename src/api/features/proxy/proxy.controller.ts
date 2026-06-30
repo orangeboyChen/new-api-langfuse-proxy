@@ -32,7 +32,7 @@ async function readRequestBodyForTelemetry(
       const cloned = request.clone();
       bodyTextForTelemetry = await cloned.text();
       return {
-        bodyForUpstream: bodyTextForTelemetry,
+        bodyForUpstream: request.body,
         bodyTextForTelemetry,
       };
     } catch {

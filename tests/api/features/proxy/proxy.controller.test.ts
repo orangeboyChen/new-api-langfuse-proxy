@@ -121,6 +121,55 @@ describe("proxyController", () => {
     }
   });
 
+  test("forwards compressed JSON bytes unchanged to upstream", async () => {
+    const payload = {
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: "hello compressed world" }],
+    };
+    const compressed = gzipSync(
+      new TextEncoder().encode(JSON.stringify(payload)),
+    );
+    let capturedEncoding = "";
+    let capturedBody = new Uint8Array();
+    const captureServer = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        capturedEncoding = req.headers.get("content-encoding") || "";
+        capturedBody = new Uint8Array(await req.arrayBuffer());
+        return new Response(
+          JSON.stringify({
+            model: "gpt-4o-mini",
+            choices: [{ message: { role: "assistant", content: "Hi there!" } }],
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createApp();
+      const res = await app.handle(
+        new Request("http://localhost/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Encoding": "gzip",
+          },
+          body: compressed,
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(capturedEncoding).toBe("gzip");
+      expect(Array.from(capturedBody)).toEqual(Array.from(compressed));
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
+  });
+
   test("returns x-request-id header", async () => {
     const app = createApp();
     const res = await app.handle(
