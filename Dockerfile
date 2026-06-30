@@ -1,6 +1,8 @@
-FROM oven/bun:1-alpine AS build
+FROM --platform=$BUILDPLATFORM oven/bun:1-alpine AS build
 
 WORKDIR /app
+
+ARG TARGETARCH
 
 # Cache packages installation
 COPY package.json bun.lock ./
@@ -12,15 +14,20 @@ COPY . .
 ENV NODE_ENV=production
 
 # Compile backend to binary (target musl for Alpine)
-RUN bun build \
-    --compile \
-    --minify-whitespace \
-    --minify-syntax \
-    --target bun-linux-x64-musl \
-    --outfile server \
-    src/index.ts
+RUN case "$TARGETARCH" in \
+      amd64) BUN_TARGET="bun-linux-x64-musl" ;; \
+      arm64) BUN_TARGET="bun-linux-arm64-musl" ;; \
+      *) echo "Unsupported TARGETARCH: $TARGETARCH" && exit 1 ;; \
+    esac && \
+    bun build \
+      --compile \
+      --minify-whitespace \
+      --minify-syntax \
+      --target "$BUN_TARGET" \
+      --outfile server \
+      src/index.ts
 
-FROM oven/bun:1-alpine AS release
+FROM --platform=$TARGETPLATFORM oven/bun:1-alpine AS release
 
 WORKDIR /app
 

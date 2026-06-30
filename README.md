@@ -1,6 +1,6 @@
-# langfuse-proxy
+# New API Langfuse Proxy
 
-A transparent proxy that forwards API requests to upstream LLM providers and sends telemetry to [Langfuse](https://langfuse.com) in the background. Zero latency overhead on the response path.
+New API Langfuse Proxy is a transparent proxy that forwards API requests to upstream LLM providers and sends telemetry to [Langfuse](https://langfuse.com) in the background. Zero latency overhead on the response path.
 
 Supports **OpenAI**, **Anthropic**, **Google Gemini**, and **DeepSeek** APIs natively.
 
@@ -210,7 +210,7 @@ The health endpoint returns upstream status:
 
 ```json
 {
-  "name": "langfuse-proxy",
+  "name": "new-api-langfuse-proxy",
   "version": "0.0.0",
   "status": "ok",
   "upstream": {
@@ -274,18 +274,18 @@ Leave `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` empty to disable telemetry
 ### Docker
 
 ```bash
-docker build -t langfuse-proxy .
-docker run -p 3000:3000 --env-file .env langfuse-proxy
+docker build -t new-api-langfuse-proxy .
+docker run -p 3000:3000 --env-file .env new-api-langfuse-proxy
 ```
 
-The Dockerfile uses a multi-stage build that compiles the app to a standalone binary (~50MB image).
+The Dockerfile uses a multi-stage build that compiles the app to a standalone binary (~50MB image) for both `amd64` and `arm64`.
 
 ### Coolify
 
 Two ways to deploy on Coolify:
 
 - **Dockerfile build pack**: point Coolify at this repo, configure environment variables in the dashboard, and set `/api/health` on port 3000 as the health check.
-- **Prebuilt image** (recommended when running alongside other Coolify services like n8n): deploy `ghcr.io/fazer-ai/langfuse-proxy:latest` as a Docker Image service on Coolify's predefined network. Other services on the same network reach the proxy via Docker DNS, with no public exposure or TLS needed. See [n8n Integration](#n8n-integration) below for the full recipe.
+- **Prebuilt multi-arch image** (recommended when running alongside other Coolify services like n8n): deploy `ghcr.io/orangeboychen/new-api-langfuse-proxy:latest` as a Docker Image service on Coolify's predefined network. The same tag works on `amd64` and `arm64`. Other services on the same network reach the proxy via Docker DNS, with no public exposure or TLS needed. See [n8n Integration](#n8n-integration) below for the full recipe.
 
 No database or external services are required either way.
 
@@ -296,10 +296,10 @@ A common deployment pairs this proxy with [n8n](https://n8n.io) on Coolify so al
 #### 1. Deploy the proxy on Coolify's internal network
 
 1. On the **n8n** service in Coolify, enable **Connect To Predefined Network** and restart it.
-2. Create a new service of type **Docker Image** using `ghcr.io/fazer-ai/langfuse-proxy:latest`.
+2. Create a new service of type **Docker Image** using `ghcr.io/orangeboychen/new-api-langfuse-proxy:latest` with the same tag on `amd64` and `arm64`.
 3. Configure environment variables using [.env.example](.env.example) as a template. At minimum, paste your Langfuse public and secret keys from the Langfuse project settings.
 4. Set the health check. Type: `CMD`, Command: `wget -qO- http://localhost:3000/api/health`.
-5. Set **Network Aliases** to `langfuse-proxy` so other services on the network resolve the proxy by that hostname in their credentials.
+5. Set **Network Aliases** to `new-api-langfuse-proxy` so other services on the network resolve the proxy by that hostname in their credentials.
 
 #### 2. Point n8n credentials at the proxy
 
@@ -307,10 +307,10 @@ Create new LLM credentials in n8n (OpenAI, Anthropic, or Google Gemini) pointing
 
 - **API Key**: the same key you would use against the upstream provider directly. The proxy forwards it.
 - **Base URL**:
-  - OpenAI: `http://langfuse-proxy:3000/v1`
-  - Anthropic: `http://langfuse-proxy:3000`
-  - Gemini: `http://langfuse-proxy:3000/v1beta`
-  - DeepSeek: `http://langfuse-proxy:3000/deepseek/v1`
+  - OpenAI: `http://new-api-langfuse-proxy:3000/v1`
+  - Anthropic: `http://new-api-langfuse-proxy:3000`
+  - Gemini: `http://new-api-langfuse-proxy:3000/v1beta`
+  - DeepSeek: `http://new-api-langfuse-proxy:3000/deepseek/v1`
 
 > Editing an existing credential to switch the base URL also works, but is riskier without testing first. Creating a fresh credential and validating end-to-end before swapping nodes over is the safer path.
 
