@@ -22,10 +22,17 @@ const HOP_BY_HOP_HEADERS = new Set([
   "host",
 ]);
 
+const ENTITY_HEADERS = new Set([
+  "content-encoding",
+  "content-length",
+  "content-md5",
+]);
+
 function copyHeaders(headers: Headers): Record<string, string> {
   const copied: Record<string, string> = {};
   headers.forEach((value, name) => {
-    if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase())) {
+    const lower = name.toLowerCase();
+    if (!HOP_BY_HOP_HEADERS.has(lower) && !ENTITY_HEADERS.has(lower)) {
       copied[name] = value;
     }
   });
@@ -56,19 +63,23 @@ async function readRequestBodyForTelemetry(
   request: Request,
   contentType: string,
 ): Promise<{
-  bodyForUpstream: ReadableStream<Uint8Array> | null;
+  bodyForUpstream: string | ReadableStream<Uint8Array> | null;
   bodyTextForTelemetry: string | null;
 }> {
   if (request.method === "GET" || request.method === "HEAD") {
     return { bodyForUpstream: null, bodyTextForTelemetry: null };
   }
 
-  const bodyForUpstream = request.body;
   let bodyTextForTelemetry: string | null = null;
 
   if (contentType.includes("application/json")) {
     try {
-      bodyTextForTelemetry = await request.clone().text();
+      const cloned = request.clone();
+      bodyTextForTelemetry = await cloned.text();
+      return {
+        bodyForUpstream: bodyTextForTelemetry,
+        bodyTextForTelemetry,
+      };
     } catch {
       /* best-effort */
     }
@@ -85,12 +96,16 @@ async function readRequestBodyForTelemetry(
         }
       }
       bodyTextForTelemetry = JSON.stringify(fields);
+      return {
+        bodyForUpstream: request.body,
+        bodyTextForTelemetry,
+      };
     } catch {
       /* best-effort */
     }
   }
 
-  return { bodyForUpstream, bodyTextForTelemetry };
+  return { bodyForUpstream: request.body, bodyTextForTelemetry };
 }
 
 function buildUpstreamUrl(

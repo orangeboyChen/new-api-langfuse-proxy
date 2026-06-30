@@ -25,13 +25,20 @@ const HOP_BY_HOP_HEADERS = new Set([
   "host",
 ]);
 
+const ENTITY_HEADERS = new Set([
+  "content-encoding",
+  "content-length",
+  "content-md5",
+]);
+
 function buildUpstreamHeaders(
   original: Headers,
   traceId: string,
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   original.forEach((value, name) => {
-    if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase())) {
+    const lower = name.toLowerCase();
+    if (!HOP_BY_HOP_HEADERS.has(lower) && !ENTITY_HEADERS.has(lower)) {
       headers[name] = value;
     }
   });
@@ -45,7 +52,8 @@ function buildResponseHeaders(
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   upstream.forEach((value, name) => {
-    if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase())) {
+    const lower = name.toLowerCase();
+    if (!HOP_BY_HOP_HEADERS.has(lower) && !ENTITY_HEADERS.has(lower)) {
       headers[name] = value;
     }
   });

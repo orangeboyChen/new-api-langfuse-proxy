@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { gzipSync } from "node:zlib";
 import { Elysia } from "elysia";
 import {
   deepseekController,
@@ -78,6 +79,46 @@ describe("proxyController", () => {
       (data.choices as Array<{ message: { content: string } }>)[0]?.message
         .content,
     ).toBe("Hi there!");
+  });
+
+  test("forwards JSON body to upstream when telemetry reads a clone", async () => {
+    let capturedBody = "";
+    const captureServer = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        capturedBody = await req.text();
+        return new Response(
+          JSON.stringify({
+            model: "gpt-4o-mini",
+            choices: [{ message: { role: "assistant", content: "Hi there!" } }],
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createApp();
+      const payload = {
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: "hello" }],
+      };
+      const res = await app.handle(
+        new Request("http://localhost/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(capturedBody).toBe(JSON.stringify(payload));
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
   });
 
   test("returns x-request-id header", async () => {
@@ -228,6 +269,38 @@ describe("proxyController", () => {
     );
 
     expect(res.status).toBe(200);
+  });
+
+  test("strips compressed entity headers from upstream responses", async () => {
+    const compressed = gzipSync(JSON.stringify({ data: [] }));
+    const captureServer = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(compressed, {
+          headers: {
+            "Content-Type": "application/json",
+            "content-encoding": "gzip",
+            "content-length": String(compressed.byteLength),
+          },
+        });
+      },
+    });
+
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createApp();
+      const res = await app.handle(
+        new Request("http://localhost/v1/models", { method: "GET" }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-encoding")).toBeNull();
+      expect(res.headers.get("content-length")).toBeNull();
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
   });
 
   test("preserves query string", async () => {

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { gzipSync } from "node:zlib";
 import { Elysia } from "elysia";
 import { anthropicController } from "@/api/features/anthropic/anthropic.controller";
 import logger from "@/api/lib/logger";
@@ -387,24 +388,59 @@ describe("anthropicController", () => {
   });
 
   test("forwards response headers without filtering provider-specific values", async () => {
-    const app = createApp();
-    const res = await app.handle(
-      new Request("http://localhost/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": "test",
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 100,
-          messages: [{ role: "user", content: "hi" }],
-        }),
+    const compressed = gzipSync(
+      JSON.stringify({
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello!" }],
+        model: "claude-sonnet-4-20250514",
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 3 },
       }),
     );
+    const captureServer = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(compressed, {
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Encoding": "gzip",
+            "Content-Length": String(compressed.byteLength),
+            "request-id": "req_test",
+            "anthropic-ratelimit-remaining": "99",
+          },
+        });
+      },
+    });
 
-    expect(res.headers.get("anthropic-ratelimit-remaining")).toBe("99");
-    expect(res.headers.get("request-id")).toBe("req_test");
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createApp();
+      const res = await app.handle(
+        new Request("http://localhost/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": "test",
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 100,
+            messages: [{ role: "user", content: "hi" }],
+          }),
+        }),
+      );
+
+      expect(res.headers.get("anthropic-ratelimit-remaining")).toBe("99");
+      expect(res.headers.get("request-id")).toBe("req_test");
+      expect(res.headers.get("content-encoding")).toBeNull();
+      expect(res.headers.get("content-length")).toBeNull();
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
   });
 });

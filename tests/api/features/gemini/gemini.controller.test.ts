@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { gzipSync } from "node:zlib";
 import { Elysia } from "elysia";
 import { geminiController } from "@/api/features/gemini/gemini.controller";
 import logger from "@/api/lib/logger";
@@ -411,24 +412,66 @@ describe("geminiController", () => {
   });
 
   test("forwards x-goog-* response headers", async () => {
-    const app = createApp();
-    const res = await app.handle(
-      new Request(
-        "http://localhost/v1beta/models/gemini-2.0-flash:generateContent",
-        {
-          method: "POST",
+    const compressed = gzipSync(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [{ text: "Hello!" }],
+              role: "model",
+            },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 5,
+          candidatesTokenCount: 3,
+          totalTokenCount: 8,
+        },
+        modelVersion: "gemini-2.0-flash",
+      }),
+    );
+    const captureServer = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(compressed, {
           headers: {
             "Content-Type": "application/json",
-            "x-goog-api-key": "test",
+            "Content-Encoding": "gzip",
+            "Content-Length": String(compressed.byteLength),
+            "x-goog-safety-ratings": "test-value",
           },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: "hi" }] }],
-          }),
-        },
-      ),
-    );
+        });
+      },
+    });
 
-    expect(res.headers.get("x-goog-safety-ratings")).toBe("test-value");
+    const originalUrl = config.upstreamBaseUrl;
+    config.upstreamBaseUrl = `http://localhost:${captureServer.port}`;
+    try {
+      const app = createApp();
+      const res = await app.handle(
+        new Request(
+          "http://localhost/v1beta/models/gemini-2.0-flash:generateContent",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-goog-api-key": "test",
+            },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: "hi" }] }],
+            }),
+          },
+        ),
+      );
+
+      expect(res.headers.get("x-goog-safety-ratings")).toBe("test-value");
+      expect(res.headers.get("content-encoding")).toBeNull();
+      expect(res.headers.get("content-length")).toBeNull();
+    } finally {
+      config.upstreamBaseUrl = originalUrl;
+      captureServer.stop();
+    }
   });
 
   test("preserves query string (?alt=sse)", async () => {
