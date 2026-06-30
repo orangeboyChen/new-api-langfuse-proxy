@@ -1,52 +1,34 @@
-# New API Langfuse Proxy
+# NewAPI Langfuse Proxy
 
-New API Langfuse Proxy is a transparent proxy that forwards API requests to upstream LLM providers and sends telemetry to [Langfuse](https://langfuse.com) in the background. Zero latency overhead on the response path.
+![NewAPI Langfuse Proxy banner](docs/readme-banner.svg)
 
-Supports **OpenAI**, **Anthropic**, **Google Gemini**, and **DeepSeek** APIs natively.
+NewAPI Langfuse Proxy sits in front of a NewAPI upstream, forwards requests without changing the client-facing API, and sends Langfuse telemetry in the background. It is built for a single stable base URL that OpenAI-compatible SDKs and other tools can point at.
+
+## What It Does
+
+- Forwards requests to `UPSTREAM_BASE_URL` with the original path and query string
+- Keeps streaming responses fast by teeing the upstream stream for background telemetry
+- Captures request IDs, session IDs, user IDs, tags, and metadata for Langfuse
+- Tracks TTFB, total latency, model, and token usage when the upstream response exposes it
+- Shuts down cleanly and drains in-flight telemetry before exit
 
 ## Architecture
 
-```sh
-                              +--> Upstream OpenAI    (/v1/*)
-Consumer  -->  Proxy  --------+--> Upstream Anthropic (/v1/messages)
-                |             +--> Upstream Gemini    (/v1beta/*)
-                |             +--> Upstream DeepSeek  (/deepseek/v1/*)
-                |
-                v (background, non-blocking)
-             Langfuse
+```text
+Consumer -> Proxy -> NewAPI upstream
+               \-> Langfuse telemetry
 ```
 
-**How it works:**
-
-1. Consumer sends a standard API request to the proxy
-2. Proxy forwards it to the appropriate upstream provider
-3. Upstream response stream is split via `ReadableStream.tee()` — one branch goes to the consumer immediately, the other is consumed in the background for telemetry
-4. Langfuse receives a trace with full input/output, model, token usage, TTFB, and total duration
-
-**Key features:**
-
-- **Multi-provider** — native support for OpenAI, Anthropic, Gemini, and DeepSeek APIs with provider-specific stream parsing and telemetry
-- **Key passthrough** — consumers send their own API key, proxy forwards it upstream. No user management.
-- **OpenAI catch-all** — `ALL /v1/*` forwards any OpenAI-compatible request. Chat completions, embeddings, audio, images, assistants — all work automatically.
-- **DeepSeek routing** — `ALL /deepseek/v1/*` forwards to the same upstream, reusing the OpenAI-compatible parsing and telemetry.
-- **Fallback passthrough** — unmatched paths are forwarded to the upstream base URL instead of returning a local 404.
-- **Streaming support** — SSE streams are split and returned immediately without mutating the request body.
-- **Full telemetry** — every request is logged to Langfuse with input messages, output content, model, full token usage breakdown, TTFB, and total duration.
-- **Graceful shutdown** — SIGTERM/SIGINT stops accepting connections, waits for in-flight requests, and flushes Langfuse before exiting.
-
-## Getting Started
-
-**Prerequisites:** [Bun](https://bun.sh/) v1.0+
+## Quick Start
 
 ```bash
-# Install dependencies
 bun install
-
-# Configure environment
 cp .env.example .env
 ```
 
-Edit `.env` with your settings. At minimum, configure Langfuse credentials to enable telemetry:
+Set `UPSTREAM_BASE_URL` to your NewAPI root URL. Do not include `/v1` in the base URL unless your upstream is actually mounted there.
+
+At minimum, configure Langfuse if you want telemetry:
 
 ```env
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
@@ -54,163 +36,46 @@ LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
 ```
 
-Start the server:
+Run the service:
 
 ```bash
-# Development (hot reload)
+# Development
 bun dev
 
 # Production
 bun start
 ```
 
-## Usage
+## Environment Variables
 
-### OpenAI
+| Variable                   | Description                                                 | Default                  |
+| -------------------------- | ----------------------------------------------------------- | ------------------------ |
+| `NODE_ENV`                 | Environment mode                                            | `development`            |
+| `PORT`                     | Server port                                                 | `3000`                   |
+| `LOG_LEVEL`                | Pino log level (`debug`, `info`, `warn`, `error`, `silent`) | `info`                   |
+| `UPSTREAM_BASE_URL`        | NewAPI upstream base URL                                    | `https://api.openai.com` |
+| `PROXY_TIMEOUT_MS`         | Upstream request timeout in ms                              | `300000`                 |
+| `TELEMETRY_MAX_BODY_BYTES` | Max response body buffered for telemetry                    | `1048576`                |
+| `LANGFUSE_BASE_URL`        | Langfuse instance URL                                       | `https://cloud.langfuse.com` |
+| `LANGFUSE_PUBLIC_KEY`      | Langfuse public key. Leave empty to disable telemetry       | -                        |
+| `LANGFUSE_SECRET_KEY`      | Langfuse secret key. Leave empty to disable telemetry       | -                        |
 
-Point any OpenAI-compatible SDK at the proxy:
+## API Surface
 
-#### Python
+| Endpoint             | Description |
+| -------------------- | ----------- |
+| `ALL /v1/*`          | OpenAI-compatible proxy to the upstream |
+| `ALL /deepseek/v1/*` | DeepSeek-compatible proxy to the same upstream |
+| `ALL /*`             | Fallback passthrough for unmatched paths |
+| `GET /api/health`    | Health check with upstream reachability |
 
-```python
-from openai import OpenAI
+Any additional upstream routes, including provider-specific ones, are passed through unchanged when your NewAPI instance exposes them.
 
-client = OpenAI(
-    base_url="http://localhost:3000/v1",
-    api_key="sk-your-openai-key",  # forwarded to upstream
-)
-
-response = client.chat.completions.create(
-    model="gpt-4o-mini",
-    messages=[{"role": "user", "content": "Hello!"}],
-)
-```
-
-#### TypeScript / Node.js
-
-```typescript
-import OpenAI from "openai";
-
-const client = new OpenAI({
-  baseURL: "http://localhost:3000/v1",
-  apiKey: "sk-your-openai-key",
-});
-
-const response = await client.chat.completions.create({
-  model: "gpt-4o-mini",
-  messages: [{ role: "user", content: "Hello!" }],
-});
-```
-
-### Anthropic
-
-Use the Anthropic SDK pointed at the proxy:
-
-#### Python
-
-```python
-from anthropic import Anthropic
-
-client = Anthropic(
-    base_url="http://localhost:3000",
-    api_key="sk-ant-your-key",  # forwarded to upstream
-)
-
-message = client.messages.create(
-    model="claude-sonnet-4-20250514",
-    max_tokens=1024,
-    messages=[{"role": "user", "content": "Hello!"}],
-)
-```
-
-#### TypeScript / Node.js
-
-```typescript
-import Anthropic from "@anthropic-ai/sdk";
-
-const client = new Anthropic({
-  baseURL: "http://localhost:3000",
-  apiKey: "sk-ant-your-key",
-});
-
-const message = await client.messages.create({
-  model: "claude-sonnet-4-20250514",
-  max_tokens: 1024,
-  messages: [{ role: "user", content: "Hello!" }],
-});
-```
-
-### Gemini
-
-Send requests to the `/v1beta/*` endpoints:
-
-```bash
-curl "http://localhost:3000/v1beta/models/gemini-2.0-flash:generateContent" \
-  -H "x-goog-api-key: your-gemini-key" \
-  -H "Content-Type: application/json" \
-  -d '{"contents":[{"parts":[{"text":"Hello!"}]}]}'
-```
-
-### DeepSeek
-
-DeepSeek is OpenAI-compatible. Point any OpenAI SDK at the `/deepseek/v1` base path:
-
-#### Python
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:3000/deepseek/v1",
-    api_key="sk-your-deepseek-key",  # forwarded to upstream
-)
-
-response = client.chat.completions.create(
-    model="deepseek-chat",  # or "deepseek-reasoner"
-    messages=[{"role": "user", "content": "Hello!"}],
-)
-```
-
-### curl (OpenAI)
-
-```bash
-# Non-streaming
-curl http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer sk-your-openai-key" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello!"}]}'
-
-# Streaming
-curl http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer sk-your-openai-key" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"Hello!"}]}'
-```
-
-### Health check
-
-```bash
-curl http://localhost:3000/api/health
-```
-
-## Endpoints
-
-| Endpoint              | Description                                                         |
-| --------------------- | ------------------------------------------------------------------ |
-| `ALL /v1/messages`    | Anthropic pass-through — forwards to Anthropic API                 |
-| `ALL /v1beta/*`       | Gemini pass-through — forwards to Gemini API                       |
-| `ALL /deepseek/v1/*`  | DeepSeek pass-through (OpenAI-compatible), forwards to DeepSeek API |
-| `ALL /v1/*`           | OpenAI catch-all — forwards any request to upstream provider       |
-| `ALL /*`              | Fallback passthrough — forwards unmatched paths to upstream base URL |
-| `GET /api/health`     | Health check — returns app version and upstream reachability       |
-
-> Routes are matched in order: `/v1/messages` is matched before the `/v1/*` catch-all, so Anthropic requests are routed correctly. The `/deepseek/v1/*` prefix does not overlap `/v1/*`, so its mount order does not matter.
-
-The health endpoint returns upstream status:
+The health endpoint returns the package version and upstream status:
 
 ```json
 {
-  "name": "new-api-langfuse-proxy",
+  "name": "langfuse-proxy",
   "version": "0.0.0",
   "status": "ok",
   "upstream": {
@@ -219,152 +84,25 @@ The health endpoint returns upstream status:
 }
 ```
 
-- `status` is `"degraded"` if the upstream is unreachable
-
-## Langfuse Telemetry
-
-Every proxied request creates a Langfuse trace with:
-
-- **Trace**: request path, input messages, output content, HTTP metadata
-- **Generation**: model name, full input/output, token usage with detailed breakdowns, timing
-
-The `usageDetails` field includes the full OpenAI token breakdown:
-
-| Field                     | Description                                  |
-| ------------------------- | -------------------------------------------- |
-| `input`                   | Non-cached prompt tokens                     |
-| `input_cached_tokens`     | Prompt tokens served from OpenAI's cache     |
-| `input_audio_tokens`      | Audio input tokens                           |
-| `output`                  | Completion tokens                            |
-| `output_reasoning_tokens` | Reasoning/chain-of-thought tokens (o1, etc.) |
-| `output_audio_tokens`     | Audio output tokens                          |
-
-Anthropic and Gemini providers report their native token usage in the same format.
-
-Timing metadata on each generation:
-
-| Field                 | Description                                           |
-| --------------------- | ----------------------------------------------------- |
-| `startTime`           | When the proxy received the request                   |
-| `completionStartTime` | When the first byte was received from upstream (TTFB) |
-| `endTime`             | When the full response was consumed                   |
-
-Set `TELEMETRY_MAX_BODY_BYTES` to limit how much response data is buffered for telemetry (default 1MB). The consumer always gets the full response regardless of this limit.
-
-Leave `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` empty to disable telemetry entirely.
-
-## Environment Variables
-
-| Variable                   | Description                                                 | Default                                     |
-| -------------------------- | ----------------------------------------------------------- | ------------------------------------------- |
-| `NODE_ENV`                 | Environment mode                                            | `development`                               |
-| `PORT`                     | Server port                                                 | `3000`                                      |
-| `LOG_LEVEL`                | Pino log level (`debug`, `info`, `warn`, `error`, `silent`) | `info`                                      |
-| **OpenAI / catch-all**     |                                                             |                                             |
-| `UPSTREAM_BASE_URL`        | Upstream LLM provider base URL                              | `https://api.openai.com`                    |
-| `PROXY_TIMEOUT_MS`         | Upstream request timeout in ms                              | `300000` (5 min)                            |
-| `TELEMETRY_MAX_BODY_BYTES` | Max response body to buffer for telemetry                   | `1048576` (1MB)                             |
-| **Langfuse**               |                                                             |                                             |
-| `LANGFUSE_BASE_URL`        | Langfuse instance URL                                       | `https://cloud.langfuse.com`                |
-| `LANGFUSE_PUBLIC_KEY`      | Langfuse public key (empty = telemetry disabled)            | -                                           |
-| `LANGFUSE_SECRET_KEY`      | Langfuse secret key (empty = telemetry disabled)            | -                                           |
-
 ## Deployment
 
 ### Docker
 
 ```bash
-docker build -t new-api-langfuse-proxy .
-docker run -p 3000:3000 --env-file .env new-api-langfuse-proxy
+docker build -t langfuse-proxy .
+docker run -p 3000:3000 --env-file .env langfuse-proxy
 ```
 
-The Dockerfile uses a multi-stage build that compiles the app to a standalone binary (~50MB image) for both `amd64` and `arm64`.
-
-### Coolify
-
-Two ways to deploy on Coolify:
-
-- **Dockerfile build pack**: point Coolify at this repo, configure environment variables in the dashboard, and set `/api/health` on port 3000 as the health check.
-- **Prebuilt multi-arch image** (recommended when running alongside other Coolify services like n8n): deploy `ghcr.io/orangeboychen/new-api-langfuse-proxy:latest` as a Docker Image service on Coolify's predefined network. The same tag works on `amd64` and `arm64`. Other services on the same network reach the proxy via Docker DNS, with no public exposure or TLS needed. See [n8n Integration](#n8n-integration) below for the full recipe.
-
-No database or external services are required either way.
-
-### n8n Integration
-
-A common deployment pairs this proxy with [n8n](https://n8n.io) on Coolify so all LLM calls from n8n workflows are transparently logged to Langfuse.
-
-#### 1. Deploy the proxy on Coolify's internal network
-
-1. On the **n8n** service in Coolify, enable **Connect To Predefined Network** and restart it.
-2. Create a new service of type **Docker Image** using `ghcr.io/orangeboychen/new-api-langfuse-proxy:latest` with the same tag on `amd64` and `arm64`.
-3. Configure environment variables using [.env.example](.env.example) as a template. At minimum, paste your Langfuse public and secret keys from the Langfuse project settings.
-4. Set the health check. Type: `CMD`, Command: `wget -qO- http://localhost:3000/api/health`.
-5. Set **Network Aliases** to `new-api-langfuse-proxy` so other services on the network resolve the proxy by that hostname in their credentials.
-
-#### 2. Point n8n credentials at the proxy
-
-Create new LLM credentials in n8n (OpenAI, Anthropic, or Google Gemini) pointing at the proxy. For DeepSeek, use the OpenAI credential type with the DeepSeek base path below:
-
-- **API Key**: the same key you would use against the upstream provider directly. The proxy forwards it.
-- **Base URL**:
-  - OpenAI: `http://new-api-langfuse-proxy:3000/v1`
-  - Anthropic: `http://new-api-langfuse-proxy:3000`
-  - Gemini: `http://new-api-langfuse-proxy:3000/v1beta`
-  - DeepSeek: `http://new-api-langfuse-proxy:3000/deepseek/v1`
-
-> Editing an existing credential to switch the base URL also works, but is riskier without testing first. Creating a fresh credential and validating end-to-end before swapping nodes over is the safer path.
-
-#### 3. (Optional) Per-tenant tagging in Langfuse
-
-For multi-tenant setups, send `X-User-Id` on every request so traces are grouped per client in Langfuse. On the n8n credential, click **Add Custom Header**:
-
-- Header name: `X-User-Id`
-- Value: a workflow expression resolving to a tenant identifier, e.g. `{{ $('Trigger').item.json.client_id }}`
-
-n8n supports dynamic expressions in credential fields, but the referenced node must exist in **every** workflow that uses the credential, otherwise the expression fails to resolve and requests break. The same applies to `X-Session-Id` (groups related traces in Langfuse) and `X-Request-Id` (used as the Langfuse trace ID).
+The image is built from a standalone Bun binary in a multi-stage Dockerfile.
 
 ## Development
 
 ```bash
-bun install       # Install dependencies
-bun dev           # Start with hot reload
-bun test          # Run tests with coverage
-bun lint          # Lint with Biome
-bun format        # Auto-fix lint and formatting
-bun check         # Lint + type-check + tests (runs in pre-commit hook)
-```
-
-### Project Structure
-
-```sh
-src/
-├── api/
-│   ├── features/
-│   │   ├── anthropic/                 # ALL /v1/messages
-│   │   │   ├── anthropic.controller.ts    Anthropic handler, auth, header forwarding
-│   │   │   └── anthropic.stream.ts        Anthropic SSE parsing
-│   │   ├── gemini/                    # ALL /v1beta/*
-│   │   │   ├── gemini.controller.ts       Gemini handler, API key forwarding
-│   │   │   └── gemini.stream.ts           Gemini stream parsing
-│   │   ├── health/                    # GET /api/health
-│   │   │   └── health.controller.ts       Per-provider reachability checks
-│   │   └── proxy/                     # ALL /v1/* + /deepseek/v1/*
-│   │       ├── proxy.controller.ts        OpenAI-compatible proxy factory (OpenAI + DeepSeek)
-│   │       ├── proxy.stream.ts            Stream consumption, SSE parsing, JSON parsing
-│   │       ├── proxy.telemetry.ts         Background Langfuse reporting (all providers)
-│   │       └── proxy.types.ts             TypeScript interfaces
-│   └── lib/
-│       ├── langfuse.ts                Langfuse client singleton + shutdown
-│       └── logger.ts                  Pino logger with pretty-print (dev) / JSON (prod)
-├── app.ts                             Elysia app setup (logging, error handling, routes)
-├── config.ts                          Environment configuration
-└── index.ts                           Entry point, server startup, graceful shutdown
-tests/
-└── api/features/
-    ├── anthropic/                     Anthropic controller and stream parser tests
-    ├── gemini/                        Gemini controller and stream parser tests
-    ├── health/                        Health endpoint tests
-    └── proxy/                         Proxy controller and stream parser tests
+bun dev
+bun test
+bun lint
+bun format
+bun check
 ```
 
 ## License
